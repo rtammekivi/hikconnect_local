@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable
 
 from homeassistant.components.switch import SwitchEntity
@@ -75,7 +76,33 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(entities)
 
 
-class EzvizHp7ChimeSwitch(CoordinatorEntity, SwitchEntity):
+class _OptimisticStateMixin:
+    """Hold a just-written switch state for a short grace window (#40).
+
+    The EZVIZ cloud takes a few seconds to propagate a write to its status
+    endpoint, so the refresh right after a toggle reads the OLD state and HA
+    flips the switch back — then forward again a poll later ("spurious state
+    transitions"). After a successful write, trust the value we sent for
+    _OPTIMISTIC_GRACE seconds and shield is_on from the coordinator's stale
+    reading; by the time the window expires the cloud has caught up.
+    """
+
+    _OPTIMISTIC_GRACE = 20.0
+    _opt_value: bool | None = None
+    _opt_until: float = 0.0
+
+    def _mark_optimistic(self, value: bool) -> None:
+        self._opt_value = value
+        self._opt_until = time.monotonic() + self._OPTIMISTIC_GRACE
+        self.async_write_ha_state()
+
+    def _shield_stale(self, coordinator_value: Any) -> Any:
+        if time.monotonic() < self._opt_until:
+            return self._opt_value
+        return coordinator_value
+
+
+class EzvizHp7ChimeSwitch(_OptimisticStateMixin, CoordinatorEntity, SwitchEntity):
     """Switch entity to enable/disable chime sound on camera or monitor."""
 
     _attr_has_entity_name = True
@@ -106,14 +133,15 @@ class EzvizHp7ChimeSwitch(CoordinatorEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         data = self.coordinator.data or {}
         if self._state_lookup is not None:
-            return self._state_lookup(data)
-        return data.get("chime_is_on")
+            return self._shield_stale(self._state_lookup(data))
+        return self._shield_stale(data.get("chime_is_on"))
 
     async def async_turn_on(self, **kwargs) -> None:
         ok = await self.hass.async_add_executor_job(
             self._api.enable_chime, self._serial
         )
         if ok:
+            self._mark_optimistic(True)
             await self.coordinator.async_request_refresh()
         else:
             _LOGGER.error("EZVIZ HP7: enable_chime failed (%s)", self._serial)
@@ -123,12 +151,13 @@ class EzvizHp7ChimeSwitch(CoordinatorEntity, SwitchEntity):
             self._api.disable_chime, self._serial
         )
         if ok:
+            self._mark_optimistic(False)
             await self.coordinator.async_request_refresh()
         else:
             _LOGGER.error("EZVIZ HP7: disable_chime failed (%s)", self._serial)
 
 
-class _BaseHp7Switch(CoordinatorEntity, SwitchEntity):
+class _BaseHp7Switch(_OptimisticStateMixin, CoordinatorEntity, SwitchEntity):
     """Common scaffolding for boolean device-level switches."""
 
     _attr_has_entity_name = True
@@ -158,7 +187,14 @@ class _BaseHp7Switch(CoordinatorEntity, SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         data = self.coordinator.data or {}
-        return data.get(self._data_key)
+        return self._shield_stale(data.get(self._data_key))
+
+    async def _async_apply(self, setter: Callable[..., bool], value: bool) -> None:
+        """Run the API write and hold the optimistic state on success."""
+        ok = await self.hass.async_add_executor_job(setter, self._serial, value)
+        if ok:
+            self._mark_optimistic(value)
+            await self.coordinator.async_request_refresh()
 
 
 class EzvizHp7DndSwitch(_BaseHp7Switch):
@@ -168,18 +204,10 @@ class EzvizHp7DndSwitch(_BaseHp7Switch):
         super().__init__(coordinator, api, serial, model, "dnd", "dnd_on")
 
     async def async_turn_on(self, **kwargs) -> None:
-        ok = await self.hass.async_add_executor_job(
-            self._api.set_dnd, self._serial, True
-        )
-        if ok:
-            await self.coordinator.async_request_refresh()
+        await self._async_apply(self._api.set_dnd, True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        ok = await self.hass.async_add_executor_job(
-            self._api.set_dnd, self._serial, False
-        )
-        if ok:
-            await self.coordinator.async_request_refresh()
+        await self._async_apply(self._api.set_dnd, False)
 
 
 class EzvizHp7PrivacySwitch(_BaseHp7Switch):
@@ -189,18 +217,10 @@ class EzvizHp7PrivacySwitch(_BaseHp7Switch):
         super().__init__(coordinator, api, serial, model, "privacy", "privacy_on")
 
     async def async_turn_on(self, **kwargs) -> None:
-        ok = await self.hass.async_add_executor_job(
-            self._api.set_privacy, self._serial, True
-        )
-        if ok:
-            await self.coordinator.async_request_refresh()
+        await self._async_apply(self._api.set_privacy, True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        ok = await self.hass.async_add_executor_job(
-            self._api.set_privacy, self._serial, False
-        )
-        if ok:
-            await self.coordinator.async_request_refresh()
+        await self._async_apply(self._api.set_privacy, False)
 
 
 class EzvizHp7DefenceSwitch(_BaseHp7Switch):
@@ -210,18 +230,10 @@ class EzvizHp7DefenceSwitch(_BaseHp7Switch):
         super().__init__(coordinator, api, serial, model, "defence", "defence_on")
 
     async def async_turn_on(self, **kwargs) -> None:
-        ok = await self.hass.async_add_executor_job(
-            self._api.set_defence, self._serial, True
-        )
-        if ok:
-            await self.coordinator.async_request_refresh()
+        await self._async_apply(self._api.set_defence, True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        ok = await self.hass.async_add_executor_job(
-            self._api.set_defence, self._serial, False
-        )
-        if ok:
-            await self.coordinator.async_request_refresh()
+        await self._async_apply(self._api.set_defence, False)
 
 
 class EzvizHp7LabelLightSwitch(_BaseHp7Switch):
@@ -233,21 +245,13 @@ class EzvizHp7LabelLightSwitch(_BaseHp7Switch):
         )
 
     async def async_turn_on(self, **kwargs) -> None:
-        ok = await self.hass.async_add_executor_job(
-            self._api.set_label_light, self._serial, True
-        )
-        if ok:
-            await self.coordinator.async_request_refresh()
+        await self._async_apply(self._api.set_label_light, True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        ok = await self.hass.async_add_executor_job(
-            self._api.set_label_light, self._serial, False
-        )
-        if ok:
-            await self.coordinator.async_request_refresh()
+        await self._async_apply(self._api.set_label_light, False)
 
 
-class EzvizHp7ChimePirSwitch(CoordinatorEntity, SwitchEntity):
+class EzvizHp7ChimePirSwitch(_OptimisticStateMixin, CoordinatorEntity, SwitchEntity):
     """Toggle ChimeMusic.pir_enable (PIR motion sound notification)."""
 
     _attr_has_entity_name = True
@@ -279,14 +283,15 @@ class EzvizHp7ChimePirSwitch(CoordinatorEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         data = self.coordinator.data or {}
         if self._state_lookup is not None:
-            return self._state_lookup(data)
-        return data.get("chime_pir_is_on")
+            return self._shield_stale(self._state_lookup(data))
+        return self._shield_stale(data.get("chime_pir_is_on"))
 
     async def async_turn_on(self, **kwargs) -> None:
         ok = await self.hass.async_add_executor_job(
             self._api.set_chime_pir_enable, self._serial, True
         )
         if ok:
+            self._mark_optimistic(True)
             await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs) -> None:
@@ -294,4 +299,5 @@ class EzvizHp7ChimePirSwitch(CoordinatorEntity, SwitchEntity):
             self._api.set_chime_pir_enable, self._serial, False
         )
         if ok:
+            self._mark_optimistic(False)
             await self.coordinator.async_request_refresh()

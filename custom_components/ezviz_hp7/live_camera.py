@@ -166,6 +166,21 @@ AUDIO_STREAM_ID = 0xC0
 FFMPEG_KILL_TIMEOUT = 2.0
 RELAY_CHUNK = 65536
 PAYLOAD_QUEUE_SIZE = 256
+# Watchdog on the relay ffmpeg's output (#41): if it produces nothing for
+# this long the session is dead — either the decode is failing silently
+# (HPD5 bad-NAL case: relay ingested 141 MB while emitting 0 bytes for 2 min)
+# or the viewer is gone and we'd never notice because we only detect a dead
+# peer on write. Without this, _handle_client blocks on proc.stdout.read()
+# forever and each retry leaks a broadcast subscriber + an ffmpeg process.
+# First-output allowance is generous: the 10 MB probe window (0.13.9) can
+# legitimately take ~60 s on a low-bitrate stream before the first byte.
+FIRST_OUTPUT_TIMEOUT = 90.0
+OUTPUT_STALL_TIMEOUT = 30.0
+# Upper bound on the GOP cache (#37). A 1 Mbit/s stream with a 30 s keyframe
+# interval accumulates ~4 MB per GOP; 8 MB covers that with headroom. If a
+# GOP exceeds this the cache is dropped for that GOP (new viewers fall back
+# to waiting for the next keyframe — the pre-cache behaviour).
+GOP_CACHE_MAX = 8 * 1024 * 1024
 
 MIN_RETRY_INTERVAL = 30.0
 LOCKOUT_THRESHOLD = 3
@@ -201,6 +216,21 @@ def _iter_nal_types(data: bytes):
                 i += 5
                 continue
         i += 1
+
+
+# Keyframe start markers (parameter sets that lead an IDR): HEVC VPS with
+# nuh_layer_id=0, H.264 SPS. Both 4- and 3-byte start codes. Used by the
+# GOP cache to know where a decodable segment begins (#37).
+_KEYFRAME_MARKERS = (
+    b"\x00\x00\x00\x01\x40\x01",
+    b"\x00\x00\x01\x40\x01",
+    b"\x00\x00\x00\x01\x67",
+    b"\x00\x00\x01\x67",
+)
+
+
+def _has_keyframe(payload: bytes) -> bool:
+    return any(m in payload for m in _KEYFRAME_MARKERS)
 
 
 def _sniff_video_codec(payload: bytes) -> Optional[str]:
@@ -392,6 +422,14 @@ class Hp7StreamRelay:
         self._sub_a_qs: List["queue.Queue[Optional[bytes]]"] = []
         # Per-client queues for the LAN raw-MPEG-PS path (single muxed feed).
         self._sub_raw_qs: List["queue.Queue[Optional[bytes]]"] = []
+        # GOP cache (#37): the stream since the last keyframe. A new viewer
+        # can only start painting from an IDR, and some doorbells emit
+        # keyframes tens of seconds apart — replaying this to each new
+        # subscriber makes the live view start immediately instead of
+        # sitting blank until the next keyframe. Guarded by _gop_lock
+        # (updated from the broadcast reader thread, read at subscribe).
+        self._gop_buf = bytearray()
+        self._gop_lock = threading.Lock()
         # True while the active shared source is the CPD7 LAN pipeline.
         self._active_lan: bool = False
         self._idle_handle: Optional[asyncio.TimerHandle] = None
@@ -423,6 +461,33 @@ class Hp7StreamRelay:
         if self._shared_vtm is not None:
             return "cloud"
         return self._stream_source
+
+    def _gop_update(self, chunk: bytes) -> None:
+        """Track the stream since the last keyframe (#37).
+
+        Called from the broadcast reader thread for every video-bearing
+        chunk. When a chunk carries a keyframe (VPS/SPS marker) the cache
+        restarts from that chunk; otherwise the chunk is appended. Chunk
+        boundaries are arbitrary, so the cache may lead with a partial pack
+        or NAL — both the mpeg demuxer and the raw ES parsers resync on the
+        next start code, and +discardcorrupt drops the remnant frame.
+        """
+        with self._gop_lock:
+            if _has_keyframe(chunk):
+                self._gop_buf = bytearray(chunk)
+            elif self._gop_buf:
+                if len(self._gop_buf) + len(chunk) > GOP_CACHE_MAX:
+                    # Oversized GOP: drop and wait for the next keyframe —
+                    # new viewers get the pre-cache behaviour for this GOP.
+                    self._gop_buf = bytearray()
+                else:
+                    self._gop_buf.extend(chunk)
+
+    def _gop_snapshot(self) -> List[bytes]:
+        """Return the cached GOP as queue-sized chunks for preloading."""
+        with self._gop_lock:
+            buf = bytes(self._gop_buf)
+        return [buf[i:i + RELAY_CHUNK] for i in range(0, len(buf), RELAY_CHUNK)]
 
     def _warn_if_hevc_on_webrtc(self, codec: Optional[str]) -> None:
         """Log a one-shot warning when HEVC is seen on the WebRTC path.
@@ -658,6 +723,9 @@ class Hp7StreamRelay:
     def _broadcast_reader(self) -> None:
         """Read VTM payloads -> PesParser -> fan out to per-client queues."""
         parser = PesParser()
+        # Fresh session — a cached GOP from the previous source is stale.
+        with self._gop_lock:
+            self._gop_buf = bytearray()
         v_bytes = a_bytes = 0
         next_v_log = 256 * 1024
         next_a_log = 32 * 1024
@@ -679,6 +747,7 @@ class Hp7StreamRelay:
                     # instead. Video stays a clean raw passthrough; audio
                     # comes from the de-mislabelled PES.
                     v_bytes += len(body)
+                    self._gop_update(body)
                     for q in list(self._sub_raw_qs):
                         try:
                             q.put_nowait(body)
@@ -722,6 +791,7 @@ class Hp7StreamRelay:
                         continue
                     if stream_id == VIDEO_STREAM_ID:
                         v_bytes += len(payload)
+                        self._gop_update(payload)
                         if self._detected_codec is None:
                             guess = _sniff_video_codec(payload)
                             if guess is not None:
@@ -861,12 +931,34 @@ class Hp7StreamRelay:
         # Subscribe to the broadcast. LAN serves one muxed MPEG-PS feed;
         # cloud serves split video/audio PES streams.
         lan = self._active_lan
+        # Preload the cached GOP (#37) so this viewer starts painting from
+        # the last keyframe immediately instead of sitting blank until the
+        # doorbell emits the next one (tens of seconds on a quiet scene).
+        # Preload BEFORE subscribing: chunks land in order ahead of the live
+        # feed; a queue.Full mid-preload truncates the replay and the viewer
+        # just falls back to waiting for the next keyframe.
+        gop = self._gop_snapshot()
         if lan:
+            for chunk in gop:
+                try:
+                    raw_q.put_nowait(chunk)
+                except queue.Full:
+                    break
             self._sub_raw_qs.append(raw_q)
             self._sub_a_qs.append(a_q)  # de-mislabelled AAC audio
         else:
+            for chunk in gop:
+                try:
+                    v_q.put_nowait(chunk)
+                except queue.Full:
+                    break
             self._sub_v_qs.append(v_q)
             self._sub_a_qs.append(a_q)
+        if gop:
+            _LOGGER.debug(
+                "Hp7StreamRelay: preloaded %d GOP chunks to new client",
+                len(gop),
+            )
         self._active_clients += 1
         self._arm_idle_timer()  # cancel idle teardown while we're connected
 
@@ -1072,10 +1164,29 @@ class Hp7StreamRelay:
                 t.start()
 
             assert proc.stdout is not None
+            got_output = False
             while True:
-                data = await proc.stdout.read(RELAY_CHUNK)
+                try:
+                    data = await asyncio.wait_for(
+                        proc.stdout.read(RELAY_CHUNK),
+                        timeout=(
+                            OUTPUT_STALL_TIMEOUT
+                            if got_output
+                            else FIRST_OUTPUT_TIMEOUT
+                        ),
+                    )
+                except asyncio.TimeoutError:
+                    _LOGGER.warning(
+                        "Hp7StreamRelay: relay ffmpeg produced no output for "
+                        "%.0fs (serial=%s, got_output=%s) — closing session",
+                        OUTPUT_STALL_TIMEOUT if got_output
+                        else FIRST_OUTPUT_TIMEOUT,
+                        self._serial, got_output,
+                    )
+                    break
                 if not data:
                     break
+                got_output = True
                 try:
                     writer.write(data)
                     await writer.drain()
