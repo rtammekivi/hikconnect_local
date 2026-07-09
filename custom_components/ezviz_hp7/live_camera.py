@@ -374,6 +374,7 @@ class Hp7StreamRelay:
         channel: int = 1,
         ffmpeg_path: str = "ffmpeg",
         listen_port: int = 0,
+        bind_host: str = "127.0.0.1",
         aggressive_mpegts: bool = False,
         video_codec: str = "auto",
         stream_source: str = "cloud",
@@ -402,6 +403,10 @@ class Hp7StreamRelay:
         # Requested fixed port (0 = pick a free one). External consumers
         # like go2rtc need a stable URL; OptionsFlow exposes this.
         self._listen_port = int(listen_port) if listen_port else 0
+        # Bind host. 127.0.0.1 keeps the unauthenticated raw stream
+        # local-only; 0.0.0.0 (opt-in) lets an external host — Frigate on
+        # another box — ingest it (#41).
+        self._bind_host = (bind_host or "127.0.0.1").strip() or "127.0.0.1"
         # Opt-in toggle to re-emit SPS/PPS in front of every IDR. Helps
         # firmwares that emit them only at the first IDR (CP5, some HP7
         # builds — #33); breaks the firmwares that already inline them.
@@ -422,6 +427,12 @@ class Hp7StreamRelay:
         self._sub_a_qs: List["queue.Queue[Optional[bytes]]"] = []
         # Per-client queues for the LAN raw-MPEG-PS path (single muxed feed).
         self._sub_raw_qs: List["queue.Queue[Optional[bytes]]"] = []
+        # Diagnostic ES dump (#41): when debug logging is on, the first
+        # 64 KB of demuxed video ES per session is written to the HA config
+        # dir so misframed NAL payloads (HPD5) can be hex-inspected without
+        # a packet capture.
+        self._es_dump_buf = bytearray()
+        self._es_dump_done = False
         # GOP cache (#37): the stream since the last keyframe. A new viewer
         # can only start painting from an IDR, and some doorbells emit
         # keyframes tens of seconds apart — replaying this to each new
@@ -461,6 +472,38 @@ class Hp7StreamRelay:
         if self._shared_vtm is not None:
             return "cloud"
         return self._stream_source
+
+    def _es_dump(self, payload: bytes) -> None:
+        """Collect the first 64 KB of video ES and write it once (#41).
+
+        Debug-only (gated on the logger level). Runs on the reader thread,
+        so the blocking file write is fine. The dump lets HPD5 users share
+        exactly what sits in front of the NAL start codes.
+        """
+        if self._es_dump_done or not _LOGGER.isEnabledFor(logging.DEBUG):
+            return
+        self._es_dump_buf.extend(payload)
+        if len(self._es_dump_buf) < 64 * 1024:
+            return
+        self._es_dump_done = True
+        try:
+            if self._hass is not None:
+                path = self._hass.config.path(
+                    f"ezviz_hp7_es_dump_{self._serial}.bin"
+                )
+            else:
+                path = f"/tmp/ezviz_hp7_es_dump_{self._serial}.bin"
+            with open(path, "wb") as fh:
+                fh.write(self._es_dump_buf[: 64 * 1024])
+            _LOGGER.warning(
+                "Hp7StreamRelay: wrote 64 KB video-ES diagnostic dump to %s "
+                "(first bytes: %s)",
+                path, self._es_dump_buf[:24].hex(" "),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Hp7StreamRelay: ES dump write failed: %s", exc)
+        finally:
+            self._es_dump_buf = bytearray()
 
     def _gop_update(self, chunk: bytes) -> None:
         """Track the stream since the last keyframe (#37).
@@ -544,7 +587,7 @@ class Hp7StreamRelay:
         # left a previous relay running.
         try:
             self._server = await asyncio.start_server(
-                self._handle_client, "127.0.0.1", self._listen_port
+                self._handle_client, self._bind_host, self._listen_port
             )
         except OSError as exc:
             if self._listen_port:
@@ -554,18 +597,25 @@ class Hp7StreamRelay:
                     self._listen_port, exc,
                 )
                 self._server = await asyncio.start_server(
-                    self._handle_client, "127.0.0.1", 0
+                    self._handle_client, self._bind_host, 0
                 )
             else:
                 raise
         sock = self._server.sockets[0]
         self._port = int(sock.getsockname()[1])
         _LOGGER.debug(
-            "Hp7StreamRelay listening on tcp://127.0.0.1:%d "
+            "Hp7StreamRelay listening on tcp://%s:%d "
             "(serial=%s aggressive_mpegts=%s video_codec=%s)",
-            self._port, self._serial, self._aggressive_mpegts,
-            self._video_codec,
+            self._bind_host, self._port, self._serial,
+            self._aggressive_mpegts, self._video_codec,
         )
+        if self._bind_host not in ("127.0.0.1", "localhost", "::1"):
+            _LOGGER.warning(
+                "Hp7StreamRelay: relay bound to %s — the raw stream on port "
+                "%d is UNAUTHENTICATED; make sure only trusted hosts can "
+                "reach it",
+                self._bind_host, self._port,
+            )
 
     async def stop(self) -> None:
         if self._server is None:
@@ -726,6 +776,8 @@ class Hp7StreamRelay:
         # Fresh session — a cached GOP from the previous source is stale.
         with self._gop_lock:
             self._gop_buf = bytearray()
+        self._es_dump_buf = bytearray()
+        self._es_dump_done = False
         v_bytes = a_bytes = 0
         next_v_log = 256 * 1024
         next_a_log = 32 * 1024
@@ -761,23 +813,22 @@ class Hp7StreamRelay:
                                     q.put_nowait(payload)
                                 except queue.Full:
                                     pass
-                        elif (
-                            stream_id == VIDEO_STREAM_ID
-                            and payload
-                            and self._detected_codec is None
-                        ):
-                            # Sniff h264 vs hevc so "auto" knows whether to
-                            # transcode on the LAN path too (CP7 streams HEVC,
-                            # which WebRTC can't show as a copy — #37 Quenbo).
-                            guess = _sniff_video_codec(payload)
-                            if guess is not None:
-                                self._detected_codec = guess
-                                _LOGGER.info(
-                                    "Hp7StreamRelay: detected LAN video "
-                                    "codec=%s (serial=%s)",
-                                    guess, self._serial,
-                                )
-                                self._warn_if_hevc_on_webrtc(guess)
+                        elif stream_id == VIDEO_STREAM_ID and payload:
+                            self._es_dump(payload)
+                            if self._detected_codec is None:
+                                # Sniff h264 vs hevc so "auto" knows whether
+                                # to transcode on the LAN path too (CP7
+                                # streams HEVC, which WebRTC can't show as a
+                                # copy — #37 Quenbo).
+                                guess = _sniff_video_codec(payload)
+                                if guess is not None:
+                                    self._detected_codec = guess
+                                    _LOGGER.info(
+                                        "Hp7StreamRelay: detected LAN video "
+                                        "codec=%s (serial=%s)",
+                                        guess, self._serial,
+                                    )
+                                    self._warn_if_hevc_on_webrtc(guess)
                     if v_bytes >= next_v_log:
                         _LOGGER.info(
                             "Hp7StreamRelay: broadcast LAN MPEG-PS progress "
@@ -792,6 +843,7 @@ class Hp7StreamRelay:
                     if stream_id == VIDEO_STREAM_ID:
                         v_bytes += len(payload)
                         self._gop_update(payload)
+                        self._es_dump(payload)
                         if self._detected_codec is None:
                             guess = _sniff_video_codec(payload)
                             if guess is not None:
@@ -1415,6 +1467,7 @@ async def async_setup_live_entities(
         serial=serial,
         channel=1,
         listen_port=relay_port,
+        bind_host=str(data.get("relay_bind") or "127.0.0.1"),
         aggressive_mpegts=aggressive_mpegts,
         video_codec=video_codec,
         stream_source=stream_source,

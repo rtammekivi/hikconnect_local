@@ -235,6 +235,7 @@
         "data": {
           "monitor_serial": "Numéro de série du moniteur intérieur",
           "relay_port": "Port TCP fixe du relai (0 = aléatoire, recommandé 8554 pour go2rtc / mediamtx)",
+          "relay_bind": "Hôte d'écoute du relai (127.0.0.1 = local uniquement, défaut sûr ; 0.0.0.0 expose le flux brut NON authentifié aux autres hôtes, p.ex. Frigate — réseaux de confiance uniquement, port fixe requis)",
           "aggressive_mpegts": "Compatibilité MPEG-TS agressive (activez si vous voyez 'Immediate exit requested' dans les logs ; sûr de laisser OFF par défaut)",
           "video_codec": "Codec vidéo (auto = détection ; hevc transcode le H.265 en H.264 pour WebRTC ; hevc_copy laisse passer le H.265 tel quel pour hôtes peu puissants / Frigate / Safari)",
           "stream_source": "Source du flux (cloud = relais VTM EZVIZ ; local = LAN directe, contourne le cloud et corrige 'pas de direct' sur les firmwares qui n'émettent pas vers le cloud — nécessite HA sur le même réseau que le portier ; auto = essaie local puis cloud)",

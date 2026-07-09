@@ -224,6 +224,7 @@
         "data": {
           "monitor_serial": "Serial monitor interno",
           "relay_port": "Porta TCP fissa relay (0 = casuale, suggerito 8554 per go2rtc/mediamtx)",
+          "relay_bind": "Host di ascolto del relay (127.0.0.1 = solo locale, default sicuro; 0.0.0.0 espone lo stream raw NON autenticato ad altri host, es. Frigate — solo reti fidate, richiede porta fissa)",
           "aggressive_mpegts": "Compatibilità MPEG-TS aggressiva (abilita se vedi 'Immediate exit requested' nei log; sicuro lasciarlo OFF di default)",
           "video_codec": "Codec video (auto = rileva; hevc transcodifica H.265 in H.264 per WebRTC; hevc_copy passa H.265 inalterato per host deboli / Frigate / Safari)",
           "stream_source": "Sorgente stream (cloud = relay VTM EZVIZ; local = LAN diretta, bypassa il cloud e risolve 'live assente' sui firmware che non pushano al cloud — richiede HA sulla stessa rete del citofono; auto = prova local poi cloud)",

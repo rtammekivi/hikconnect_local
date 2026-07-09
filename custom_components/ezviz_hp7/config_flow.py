@@ -16,6 +16,8 @@ from .const import (
     CONF_SERIAL,
     CONF_MONITOR_SERIAL,
     CONF_RELAY_PORT,
+    CONF_RELAY_BIND,
+    DEFAULT_RELAY_BIND,
     CONF_AGGRESSIVE_MPEGTS,
     CONF_VIDEO_CODEC,
     VIDEO_CODEC_AUTO,
@@ -325,6 +327,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                 relay_port = 0
             if relay_port < 0 or relay_port > 65535:
                 relay_port = 0
+            relay_bind = (
+                str(user_input.get(CONF_RELAY_BIND) or DEFAULT_RELAY_BIND)
+            ).strip() or DEFAULT_RELAY_BIND
             aggressive = bool(user_input.get(CONF_AGGRESSIVE_MPEGTS, False))
             codec = str(
                 user_input.get(CONF_VIDEO_CODEC) or VIDEO_CODEC_AUTO
@@ -346,6 +351,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                 data={
                     CONF_MONITOR_SERIAL: monitor,
                     CONF_RELAY_PORT: relay_port,
+                    CONF_RELAY_BIND: relay_bind,
                     CONF_AGGRESSIVE_MPEGTS: aggressive,
                     CONF_VIDEO_CODEC: codec,
                     CONF_STREAM_SOURCE: source,
@@ -373,6 +379,19 @@ class OptionsFlow(config_entries.OptionsFlow):
             current_port_int = int(current_port or 0)
         except (TypeError, ValueError):
             current_port_int = 0
+
+        current_bind = (
+            str(
+                self.config_entry.options.get(
+                    CONF_RELAY_BIND,
+                    self.config_entry.data.get(
+                        CONF_RELAY_BIND, DEFAULT_RELAY_BIND
+                    ),
+                )
+                or DEFAULT_RELAY_BIND
+            ).strip()
+            or DEFAULT_RELAY_BIND
+        )
 
         current_aggressive = bool(
             self.config_entry.options.get(
@@ -417,6 +436,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_RELAY_PORT, default=current_port_int
                 ): vol.All(vol.Coerce(int), vol.Range(min=0, max=65535)),
+                vol.Optional(CONF_RELAY_BIND, default=current_bind): str,
                 vol.Optional(
                     CONF_AGGRESSIVE_MPEGTS, default=current_aggressive
                 ): bool,

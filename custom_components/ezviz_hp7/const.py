@@ -9,6 +9,12 @@ CONF_MONITOR_SERIAL = "monitor_serial"
 # tools like go2rtc, mediamtx or Frigate can keep a stable URL across HA
 # restarts.
 CONF_RELAY_PORT = "relay_port"
+# Host the relay listens on. Default 127.0.0.1 keeps the unauthenticated raw
+# stream local-only. Set 0.0.0.0 (with a fixed relay_port) to let an external
+# consumer on another host — e.g. Frigate — ingest it (#41). LAN-trusted
+# setups only: there is no auth on the relay socket.
+CONF_RELAY_BIND = "relay_bind"
+DEFAULT_RELAY_BIND = "127.0.0.1"
 # Inject SPS/PPS in front of every IDR. Some firmwares only emit them on
 # the first keyframe and HA's Stream worker rejects mid-stream connect with
 # "Immediate exit requested". This was on by default in 0.9.5 but broke

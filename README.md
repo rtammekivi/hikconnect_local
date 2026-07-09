@@ -203,6 +203,8 @@ go2rtc will publish the stream as:
 
 Frigate then ingests `rtsp://homeassistant.local:8554/hp7` like any other camera, with `record` and `detect` roles.
 
+**Frigate (or any consumer) on a different host:** by default the relay binds `127.0.0.1`, so only processes on the HA machine can read it. Since **0.14.0**, Configure exposes a **Relay listen host** option — set it to `0.0.0.0` (together with a fixed port) to let another box connect directly to `tcp://<ha-ip>:8554`. ⚠️ The raw stream is **unauthenticated**: only do this on a trusted LAN / VLAN, ideally with a firewall rule limiting the source IP.
+
 ---
 
 ## 🌐 Translations

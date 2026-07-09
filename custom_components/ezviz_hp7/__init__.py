@@ -14,6 +14,8 @@ from .const import (
     PLATFORMS,
     CONF_MONITOR_SERIAL,
     CONF_RELAY_PORT,
+    CONF_RELAY_BIND,
+    DEFAULT_RELAY_BIND,
     CONF_AGGRESSIVE_MPEGTS,
     CONF_VIDEO_CODEC,
     VIDEO_CODEC_AUTO,
@@ -80,6 +82,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         relay_port = 0
     if relay_port < 0 or relay_port > 65535:
         relay_port = 0
+    relay_bind = str(
+        entry.options.get(
+            CONF_RELAY_BIND, entry.data.get(CONF_RELAY_BIND, DEFAULT_RELAY_BIND)
+        )
+        or DEFAULT_RELAY_BIND
+    ).strip()
     aggressive_mpegts = bool(
         entry.options.get(
             CONF_AGGRESSIVE_MPEGTS,
@@ -145,6 +153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "monitor_serial": monitor_serial,
         "model": model,
         "relay_port": relay_port,
+        "relay_bind": relay_bind,
         "aggressive_mpegts": aggressive_mpegts,
         "video_codec": video_codec,
         "stream_source": stream_source,
