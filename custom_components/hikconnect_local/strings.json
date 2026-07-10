@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Hik-Connect Local",
+        "description": "Log in with your Hik-Connect account. The video is pulled directly from the indoor station over your LAN (CPD7); the cloud is used only to fetch the device list and per-device stream key.",
+        "data": {
+          "account": "Account (email or username)",
+          "password": "Password",
+          "base_url": "API base URL"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid account or password (a CAPTCHA may be required — open the Hik-Connect app once, then retry).",
+      "cannot_connect": "Could not reach Hik-Connect."
+    },
+    "abort": {
+      "already_configured": "This account is already configured."
+    }
+  }
+}

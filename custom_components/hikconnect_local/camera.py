@@ -1,0 +1,175 @@
+"""Camera entity for Hik-Connect Local — native CPD7 LAN stream.
+
+Pipeline (all local, no cloud/phone/frida):
+  Cpd7LanClient (9010/9020, AES-128 control key from CAS)
+    -> HikStreamDecoder (strip $01 framing + 12B RTP + 13B Hik header -> H.264)
+    -> ffmpeg (H.264 -> MJPEG) -> browser / snapshot.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from aiohttp import web
+from homeassistant.components.camera import Camera
+from homeassistant.components.ffmpeg import get_ffmpeg_manager
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import DOMAIN, MJPEG_FPS, MJPEG_HEIGHT, MJPEG_QUALITY, MJPEG_WIDTH
+from .lib.hik_decoder import HikStreamDecoder
+from .lib.lan_client import Cpd7LanClient
+
+_LOGGER = logging.getLogger(__name__)
+_MAX_EMPTY_READS = 3
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    data = hass.data[DOMAIN][entry.entry_id]
+    client = data["client"]
+    async_add_entities(HikLocalCamera(hass, client, d) for d in data["devices"])
+
+
+class HikLocalCamera(Camera):
+    """A Hik-Connect indoor-station camera served over the local CPD7 stream."""
+
+    _attr_has_entity_name = True
+    _attr_name = None
+
+    def __init__(self, hass: HomeAssistant, client, device) -> None:
+        super().__init__()
+        self.hass = hass
+        self._client = client
+        self._dev = device
+        self._key: str | None = None
+        self._attr_unique_id = f"{DOMAIN}_{device.serial}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._dev.serial)},
+            name=self._dev.name,
+            manufacturer="Hikvision",
+            model=self._dev.device_type or "Hik-Connect",
+        )
+
+    # -- stream plumbing --------------------------------------------------
+    async def _control_key(self) -> str:
+        if self._key is None:
+            self._key, _ = await self.hass.async_add_executor_job(
+                self._client.get_control_key, self._dev.serial
+            )
+        return self._key
+
+    async def _open_client(self) -> Cpd7LanClient:
+        key = await self._control_key()
+        c = Cpd7LanClient(
+            self._dev.local_ip,
+            self._dev.serial,
+            key.encode("ascii"),
+            channel=1,
+            encrypt_stream=True,
+        )
+        await self.hass.async_add_executor_job(c.start)
+        return c
+
+    async def _pump(self, client: Cpd7LanClient, decoder: HikStreamDecoder, writer) -> None:
+        """Read CPD7 chunks (in executor) -> decode -> write H.264 to ffmpeg stdin."""
+        empty = 0
+        try:
+            while True:
+                buf = await self.hass.async_add_executor_job(client.read_chunk)
+                if not buf:
+                    empty += 1
+                    if empty >= _MAX_EMPTY_READS:
+                        break
+                    continue
+                empty = 0
+                decoder.feed(buf)
+                h = decoder.take()
+                if h:
+                    writer.write(h)
+                    await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+            pass
+        finally:
+            try:
+                writer.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _ffmpeg(self) -> str:
+        return get_ffmpeg_manager(self.hass).binary
+
+    # -- snapshot ---------------------------------------------------------
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        client = await self._open_client()
+        decoder = HikStreamDecoder()
+        proc = await asyncio.create_subprocess_exec(
+            self._ffmpeg(), "-loglevel", "error",
+            "-fflags", "+discardcorrupt", "-f", "h264", "-i", "pipe:0",
+            "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        pump = asyncio.create_task(self._pump(client, decoder, proc.stdin))
+        try:
+            jpeg = await asyncio.wait_for(proc.stdout.read(), timeout=15)
+        except (TimeoutError, asyncio.TimeoutError):
+            jpeg = b""
+        finally:
+            pump.cancel()
+            await self.hass.async_add_executor_job(client.close)
+            with _suppress():
+                proc.kill()
+        return jpeg or None
+
+    # -- live MJPEG -------------------------------------------------------
+    async def handle_async_mjpeg_stream(self, request: web.Request) -> web.StreamResponse:
+        client = await self._open_client()
+        decoder = HikStreamDecoder()
+        proc = await asyncio.create_subprocess_exec(
+            self._ffmpeg(), "-loglevel", "warning",
+            "-fflags", "+discardcorrupt", "-f", "h264", "-i", "pipe:0",
+            "-an", "-c:v", "mjpeg", "-q:v", str(MJPEG_QUALITY), "-r", str(MJPEG_FPS),
+            "-vf", f"scale={MJPEG_WIDTH}:{MJPEG_HEIGHT}", "-f", "mpjpeg", "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        pump = asyncio.create_task(self._pump(client, decoder, proc.stdin))
+        response = web.StreamResponse(
+            status=200,
+            headers={"Content-Type": "multipart/x-mixed-replace; boundary=ffmpeg"},
+        )
+        await response.prepare(request)
+        try:
+            while True:
+                chunk = await proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                await response.write(chunk)
+        except (ConnectionResetError, ConnectionAbortedError, asyncio.CancelledError):
+            pass
+        finally:
+            pump.cancel()
+            await self.hass.async_add_executor_job(client.close)
+            with _suppress():
+                proc.kill()
+        return response
+
+
+class _suppress:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return True

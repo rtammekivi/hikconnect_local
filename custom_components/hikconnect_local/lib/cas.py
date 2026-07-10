@@ -19,8 +19,8 @@ from Crypto.Cipher import AES
 from cryptography import x509
 import xmltodict
 
-from .constants import FEATURE_CODE, XOR_KEY
-from .exceptions import InvalidHost, PyEzvizError
+from ._const import FEATURE_CODE, XOR_KEY
+from ._const import InvalidHost, PyEzvizError
 
 _LOGGER = logging.getLogger(__name__)
 
