@@ -1,0 +1,34 @@
+MIT License
+
+Copyright (c) 2026 Silvio Vaira (Bobsilvio)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Vendored components retain their original licenses:
+
+- custom_components/ezviz_hp7/cpd7/ — adapted from albrzmr/ezviz_hp7 (MIT,
+  Copyright albrzmr). CPD7 LAN protocol reverse engineering by albrzmr.
+- custom_components/ezviz_hp7/mjpeg.py — MJPEG approach adapted from
+  albrzmr/ezviz_hp7 (MIT, Copyright albrzmr).
+- custom_components/ezviz_hp7/pylocalapi/ — vendored from
+  RenierM26/pyEzvizApi (Apache License 2.0, Copyright Renier Moorcroft).
+  See https://github.com/RenierM26/pyEzvizApi/blob/main/LICENSE.md for the
+  full license text, which continues to apply to that directory.
