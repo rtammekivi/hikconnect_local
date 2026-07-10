@@ -25,7 +25,13 @@ from .hikconnect_api import HikConnectAuthError, HikConnectClient
 from .push import HikConnectPush
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.CAMERA, Platform.BUTTON, Platform.LOCK, Platform.SENSOR]
+PLATFORMS = [
+    Platform.CAMERA,
+    Platform.BUTTON,
+    Platform.LOCK,
+    Platform.SENSOR,
+    Platform.SELECT,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -106,6 +112,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
         "push": push,
         "unsubs": unsubs,
+        "quality": {},  # (serial_chN -> MAIN|SUB), shared: select writes, camera reads
     }
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

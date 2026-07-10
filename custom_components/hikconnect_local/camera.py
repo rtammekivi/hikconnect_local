@@ -45,11 +45,12 @@ async def async_setup_entry(
 ) -> None:
     data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
+    quality = data["quality"]
     sems: dict[str, asyncio.Semaphore] = {}
     entities = []
     for cam in data["cameras"]:
         sem = sems.setdefault(cam.serial, asyncio.Semaphore(_MAX_STREAMS_PER_DEVICE))
-        entities.append(HikLocalCamera(hass, client, cam, sem))
+        entities.append(HikLocalCamera(hass, client, cam, sem, quality))
     async_add_entities(entities)
 
 
@@ -60,13 +61,20 @@ class HikLocalCamera(Camera):
     _attr_should_poll = False
 
     def __init__(
-        self, hass: HomeAssistant, client, cam: HikCamera, sem: asyncio.Semaphore
+        self,
+        hass: HomeAssistant,
+        client,
+        cam: HikCamera,
+        sem: asyncio.Semaphore,
+        quality: dict[str, str],
     ) -> None:
         super().__init__()
         self.hass = hass
         self._client = client
         self._cam = cam
         self._sem = sem  # shared across the device's channels
+        self._quality = quality  # shared with the Stream-quality select
+        self._qkey = f"{cam.serial}_ch{cam.channel}"
         self._key: str | None = None
         self._jpeg: bytes | None = None
         self._jpeg_ts = 0.0
@@ -99,6 +107,7 @@ class HikLocalCamera(Camera):
                 key.encode("ascii"),
                 channel=self._cam.channel,
                 encrypt_stream=True,
+                stream_type=self._quality.get(self._qkey, "MAIN"),
             )
             await self.hass.async_add_executor_job(c.start)
             return c
