@@ -42,12 +42,24 @@ Cpd7LanClient (9010 INIT/INVITE/PLAY, AES-128-CBC control) ──► 9020 stream
 A camera entity is created for each LAN-reachable device. Live view uses MJPEG
 (codec-agnostic, low-latency, no go2rtc required); snapshots work too.
 
+## Entities
+
+- **Camera** — one per real door-station channel (native local CPD7 video).
+- **Lock** — one per unlock-capable channel; opens the door latch (momentary,
+  auto-relocks after a few seconds). Uses the cloud remote-unlock endpoint.
+- **Buttons** — *Answer call*, *Hang up call*, *Cancel call* (cloud call ops).
+- **Call status sensor** — `idle` / `ringing` / `call in progress`. State comes
+  from the authoritative cloud poll; a realtime MQTT push event triggers an
+  immediate re-poll so ringing shows in near real time.
+
+Call/door controls and status go through the Hik-Connect cloud (the video stays
+fully local). Unlock/answer/hangup/cancel are the same operations the app sends.
+
 ## Status / limits
 
-- Verified on `DS-KH6320-WTE1` (H.264 Baseline 720p25).
-- Requires HA to be on the **same LAN** as the station (routed subnets are fine
-  as long as ports 9010/9020 are reachable).
-- Video only for now — call answer/hangup and door unlock are not yet wired.
+- Verified on `DS-KH6320-WTE1` (H.264 Baseline 720p25, 2 door-station channels).
+- Video requires HA on the **same LAN** as the station (routed subnets fine as
+  long as ports 9010/9020 are reachable). Controls/status use the cloud.
 - The device allows a limited number of concurrent local streams; close the
   phone app's live view if a stream won't start.
 

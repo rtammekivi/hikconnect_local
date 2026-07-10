@@ -3,17 +3,29 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import CONF_ACCOUNT, CONF_BASE_URL, CONF_PASSWORD, DEFAULT_BASE_URL, DOMAIN
+from .const import (
+    CALL_POLL_INTERVAL,
+    CONF_ACCOUNT,
+    CONF_BASE_URL,
+    CONF_PASSWORD,
+    DEFAULT_BASE_URL,
+    DOMAIN,
+    call_signal,
+)
 from .hikconnect_api import HikConnectAuthError, HikConnectClient
+from .push import HikConnectPush
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.CAMERA]
+PLATFORMS = [Platform.CAMERA, Platform.BUTTON, Platform.LOCK, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -25,28 +37,75 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _login_and_enumerate():
         client.login()
+        devices = client.get_devices()
         cams = []
-        for dev in client.get_devices():
+        for dev in devices:
             if not dev.local_ip:
                 continue
             cams.extend(client.get_cameras(dev))
-        return cams
+        return devices, cams
 
     try:
-        cameras = await hass.async_add_executor_job(_login_and_enumerate)
+        devices, cameras = await hass.async_add_executor_job(_login_and_enumerate)
     except HikConnectAuthError as err:
         raise ConfigEntryAuthFailed(str(err)) from err
     except Exception as err:  # noqa: BLE001
         raise ConfigEntryNotReady(f"Hik-Connect setup failed: {err}") from err
 
     _LOGGER.info(
-        "Hik-Connect Local: %d camera channel(s) across LAN-reachable devices",
-        len(cameras),
+        "Hik-Connect Local: %d device(s), %d camera channel(s)",
+        len(devices), len(cameras),
     )
+
+    async def _poll_call_status() -> dict[str, dict]:
+        def work():
+            out: dict[str, dict] = {}
+            for dev in devices:
+                try:
+                    out[dev.serial] = client.get_call_status(dev.serial)
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("call status poll failed for %s: %s", dev.serial, err)
+                    out[dev.serial] = {"status": "unknown", "info": {}}
+            return out
+
+        return await hass.async_add_executor_job(work)
+
+    coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name=f"{DOMAIN}_call_status",
+        update_method=_poll_call_status,
+        update_interval=timedelta(seconds=CALL_POLL_INTERVAL),
+    )
+    await coordinator.async_config_entry_first_refresh()
+
+    # Realtime push: a call event just triggers an immediate authoritative poll.
+    unsubs = []
+    for dev in devices:
+        unsubs.append(
+            async_dispatcher_connect(
+                hass,
+                call_signal(dev.serial),
+                lambda *_: hass.async_create_task(coordinator.async_request_refresh()),
+            )
+        )
+
+    push = HikConnectPush(
+        hass, client._base, entry.data[CONF_ACCOUNT], entry.data[CONF_PASSWORD]
+    )
+    try:
+        await push.async_start()
+    except Exception as err:  # noqa: BLE001 - never fail setup on push
+        _LOGGER.warning("Hik-Connect push listener failed to start: %s", err)
+        push = None
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "client": client,
+        "devices": devices,
         "cameras": cameras,
+        "coordinator": coordinator,
+        "push": push,
+        "unsubs": unsubs,
     }
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -55,5 +114,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        data = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if data:
+            for unsub in data.get("unsubs", []):
+                unsub()
+            push = data.get("push")
+            if push is not None:
+                await push.async_stop()
     return unload_ok

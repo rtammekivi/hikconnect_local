@@ -10,8 +10,9 @@ IP), and a token shaped the way `EzvizCAS` expects.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import requests
@@ -26,6 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 DEFAULT_BASE = "https://api.hik-connect.com"
 FEATURE_CODE = "deadbeefdeadbeef"
 _HEADERS = {"clientType": "55", "lang": "en-US", "featureCode": FEATURE_CODE}
+_CALL_STATUS = {1: "idle", 2: "ringing", 3: "call in progress"}
 
 
 @dataclass
@@ -34,6 +36,7 @@ class HikDevice:
     name: str
     local_ip: str | None
     device_type: str
+    locks: dict[int, int] = field(default_factory=dict)  # channel -> lock count
 
 
 @dataclass
@@ -99,6 +102,7 @@ class HikConnectClient:
             )
             j = self._get(path)
             conns = j.get("connectionInfos") or {}
+            stats = j.get("statusInfos") or {}
             for d in j.get("deviceInfos", []):
                 serial = d["deviceSerial"]
                 conn = conns.get(serial) or {}
@@ -106,7 +110,13 @@ class HikConnectClient:
                 if ip in ("0.0.0.0", "", None):
                     ip = None
                 devices.append(
-                    HikDevice(serial, d.get("name") or serial, ip, d.get("deviceType", ""))
+                    HikDevice(
+                        serial,
+                        d.get("name") or serial,
+                        ip,
+                        d.get("deviceType", ""),
+                        self._parse_locks(stats.get(serial) or {}),
+                    )
                 )
             offset += limit
             has_next = (j.get("page") or {}).get("hasNext", False)
@@ -159,9 +169,53 @@ class HikConnectClient:
         session = doc["Response"]["Session"]
         return session["@Key"], session["@OperationCode"]
 
+    # -- call / door controls (cloud) -------------------------------------
+    def unlock(self, serial: str, channel: int, lock_index: int = 0) -> dict:
+        """Open a door latch connected to an outdoor station channel."""
+        return self._put(
+            f"/v3/devconfig/v1/call/{serial}/{channel}/remote/unlock"
+            f"?srcId=1&lockId={lock_index}&userType=0"
+        )
+
+    def answer_call(self, serial: str) -> dict:
+        return self._put(f"/v3/devconfig/v1/call/{serial}/operation?cmdId=2")
+
+    def cancel_call(self, serial: str) -> dict:
+        return self._put(f"/v3/devconfig/v1/call/{serial}/operation?cmdId=3")
+
+    def hangup_call(self, serial: str) -> dict:
+        return self._put(f"/v3/devconfig/v1/call/{serial}/operation?cmdId=5")
+
+    def get_call_status(self, serial: str) -> dict:
+        """Return {'status': idle|ringing|call in progress|unknown, 'info': {...}}."""
+        r = self._get(f"/v3/devconfig/v1/call/{serial}/status")
+        if (r.get("meta") or {}).get("code") != 200:
+            return {"status": "unknown", "info": {}}
+        data = json.loads(r["data"])
+        status = _CALL_STATUS.get(data.get("callStatus"), "unknown")
+        return {"status": status, "info": data.get("callerInfo") or {}}
+
+    @staticmethod
+    def _parse_locks(status_info: dict) -> dict[int, int]:
+        """channel -> lock count, from statusInfos[serial].optionals.lockNum."""
+        try:
+            raw = json.loads((status_info.get("optionals") or {})["lockNum"])
+        except (KeyError, TypeError, ValueError):
+            return {}
+        out: dict[int, int] = {}
+        for k, v in raw.items():
+            try:
+                out[int(k)] = int(v)
+            except (TypeError, ValueError):
+                continue
+        return out
+
     # -- http helpers -----------------------------------------------------
     def _post(self, path: str, data: dict) -> dict:
         return self._session.post(f"{self._base}{path}", data=data, timeout=25).json()
 
     def _get(self, path: str) -> dict:
         return self._session.get(f"{self._base}{path}", timeout=25).json()
+
+    def _put(self, path: str) -> dict:
+        return self._session.put(f"{self._base}{path}", timeout=25).json()
