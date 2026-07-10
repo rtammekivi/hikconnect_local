@@ -28,6 +28,9 @@ async def async_setup_entry(
         for dev in data["devices"]
         for spec in _BUTTONS
     ]
+    for dev in data["devices"]:
+        if dev.locks:
+            entities.append(HikUnlockAllButton(hass, client, dev))
     async_add_entities(entities)
 
 
@@ -51,3 +54,29 @@ class HikCallButton(ButtonEntity):
         await self.hass.async_add_executor_job(
             getattr(self._client, self._method), self._serial
         )
+
+
+class HikUnlockAllButton(ButtonEntity):
+    """Unlock every lock-capable channel on the station in one press."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Unlock all doors"
+    _attr_icon = "mdi:lock-open-variant"
+
+    def __init__(self, hass, client, dev):
+        self.hass = hass
+        self._client = client
+        self._dev = dev
+        self._attr_unique_id = f"{DOMAIN}_{dev.serial}_unlock_all"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._dev.serial)})
+
+    async def async_press(self) -> None:
+        def work():
+            for channel, count in sorted(self._dev.locks.items()):
+                for idx in range(count):
+                    self._client.unlock(self._dev.serial, channel, idx)
+
+        await self.hass.async_add_executor_job(work)
