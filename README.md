@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="custom_components/hikconnect_local/icon.png" width="128" alt="Hik-Connect Local"/>
+  <img src="custom_components/hikconnect_local/brand/icon.png" width="128" alt="Hik-Connect Local"/>
 </p>
 
 # Hik-Connect Local
