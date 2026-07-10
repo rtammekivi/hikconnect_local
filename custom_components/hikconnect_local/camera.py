@@ -1,8 +1,9 @@
 """Camera entities for Hik-Connect Local — native CPD7 LAN stream.
 
-One entity per real channel (door station).  Each stream request opens a fresh
-Cpd7LanClient and closes it when the viewer/snapshot finishes, so nothing stays
-connected to the station while idle.
+One entity per real channel (door station).  A CPD7 client is opened **per active
+view/snapshot** and closed as soon as the viewer disconnects or the snapshot is
+taken — nothing streams while idle.  A short snapshot cache and a per-device
+concurrency cap keep HA from over-subscribing the station's limited stream slots.
 
 Pipeline (all local, no cloud/phone/frida):
   Cpd7LanClient (9010/9020, AES-128 control key from CAS, per-channel)
@@ -14,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
+
 import logging
 
 from aiohttp import web
@@ -30,7 +33,11 @@ from .lib.hik_decoder import HikStreamDecoder
 from .lib.lan_client import Cpd7LanClient
 
 _LOGGER = logging.getLogger(__name__)
+
 _MAX_EMPTY_READS = 3
+_SNAPSHOT_TTL = 10.0          # reuse a recent still instead of re-opening a stream
+_MAX_STREAMS_PER_DEVICE = 2   # keep within the station's concurrent-stream limit
+_ACQUIRE_TIMEOUT = 6.0
 
 
 async def async_setup_entry(
@@ -38,21 +45,31 @@ async def async_setup_entry(
 ) -> None:
     data = hass.data[DOMAIN][entry.entry_id]
     client = data["client"]
-    async_add_entities(HikLocalCamera(hass, client, cam) for cam in data["cameras"])
+    sems: dict[str, asyncio.Semaphore] = {}
+    entities = []
+    for cam in data["cameras"]:
+        sem = sems.setdefault(cam.serial, asyncio.Semaphore(_MAX_STREAMS_PER_DEVICE))
+        entities.append(HikLocalCamera(hass, client, cam, sem))
+    async_add_entities(entities)
 
 
 class HikLocalCamera(Camera):
     """A door-station channel served over the local CPD7 stream."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
 
-    def __init__(self, hass: HomeAssistant, client, cam: HikCamera) -> None:
+    def __init__(
+        self, hass: HomeAssistant, client, cam: HikCamera, sem: asyncio.Semaphore
+    ) -> None:
         super().__init__()
         self.hass = hass
         self._client = client
         self._cam = cam
+        self._sem = sem  # shared across the device's channels
         self._key: str | None = None
-        self._lock = asyncio.Lock()
+        self._jpeg: bytes | None = None
+        self._jpeg_ts = 0.0
         self._attr_name = cam.name
         self._attr_unique_id = f"{DOMAIN}_{cam.serial}_ch{cam.channel}"
 
@@ -93,7 +110,6 @@ class HikLocalCamera(Camera):
             return None
 
     async def _pump(self, client: Cpd7LanClient, decoder: HikStreamDecoder, writer) -> None:
-        """Read CPD7 chunks (executor) -> decode -> write H.264 to ffmpeg stdin."""
         empty = 0
         try:
             while True:
@@ -127,14 +143,26 @@ class HikLocalCamera(Camera):
         with contextlib.suppress(Exception):
             proc.kill()
 
+    async def _acquire(self, timeout: float) -> bool:
+        try:
+            await asyncio.wait_for(self._sem.acquire(), timeout=timeout)
+            return True
+        except (TimeoutError, asyncio.TimeoutError):
+            return False
+
     # -- snapshot ---------------------------------------------------------
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        async with self._lock:
+        now = time.monotonic()
+        if self._jpeg and now - self._jpeg_ts < _SNAPSHOT_TTL:
+            return self._jpeg
+        if not await self._acquire(2.0):
+            return self._jpeg  # busy — return last known still
+        try:
             client = await self._open_client()
             if client is None:
-                return None
+                return self._jpeg
             decoder = HikStreamDecoder()
             proc = await asyncio.create_subprocess_exec(
                 self._ffmpeg(), "-loglevel", "error",
@@ -146,16 +174,22 @@ class HikLocalCamera(Camera):
             )
             pump = asyncio.create_task(self._pump(client, decoder, proc.stdin))
             try:
-                jpeg = await asyncio.wait_for(proc.stdout.read(), timeout=15)
+                jpeg = await asyncio.wait_for(proc.stdout.read(), timeout=12)
             except (TimeoutError, asyncio.TimeoutError):
                 jpeg = b""
             finally:
                 await self._cleanup(pump, client, proc)
-            return jpeg or None
+            if jpeg:
+                self._jpeg, self._jpeg_ts = jpeg, time.monotonic()
+            return jpeg or self._jpeg
+        finally:
+            self._sem.release()
 
     # -- live MJPEG -------------------------------------------------------
     async def handle_async_mjpeg_stream(self, request: web.Request) -> web.StreamResponse:
-        async with self._lock:
+        if not await self._acquire(_ACQUIRE_TIMEOUT):
+            return web.Response(status=503, text="camera busy")
+        try:
             client = await self._open_client()
             if client is None:
                 return web.Response(status=503, text="no live feed")
@@ -186,3 +220,5 @@ class HikLocalCamera(Camera):
             finally:
                 await self._cleanup(pump, client, proc)
             return response
+        finally:
+            self._sem.release()
