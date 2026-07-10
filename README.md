@@ -30,7 +30,7 @@ Cpd7LanClient (9010 INIT/INVITE/PLAY, AES-128-CBC control) ──► 9020 stream
 ## Install (HACS)
 
 1. HACS → ⋮ → **Custom repositories** → add
-   `https://github.com/rtammekivi/ezviz_hp7`, type **Integration**.
+   `https://github.com/rtammekivi/hikconnect_local`, type **Integration**.
 2. Install **Hik-Connect Local**, restart Home Assistant.
 3. **Settings → Devices & Services → Add Integration → Hik-Connect Local**,
    enter your Hik-Connect account + password.
