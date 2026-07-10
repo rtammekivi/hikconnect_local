@@ -5,8 +5,19 @@ DOMAIN = "hikconnect_local"
 CONF_ACCOUNT = "account"
 CONF_PASSWORD = "password"
 CONF_BASE_URL = "base_url"
+CONF_SERVER = "server"
 
 DEFAULT_BASE_URL = "https://api.hik-connect.com"
+
+# Predefined Hik-Connect regional API servers (value -> label). The global
+# entry auto-routes via the login region redirect; picking a region is just
+# faster/deterministic. "custom" reveals the free-text override below.
+SERVER_CUSTOM = "custom"
+SERVERS = {
+    DEFAULT_BASE_URL: "Global (auto-route)",
+    "https://apiieu.hik-connect.com": "Europe (apiieu)",
+    "https://apiius.hik-connect.com": "Americas (apiius)",
+}
 
 # Live MJPEG transcode defaults
 MJPEG_FPS = 8

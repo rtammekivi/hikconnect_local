@@ -7,13 +7,19 @@
         "data": {
           "account": "Account (email or username)",
           "password": "Password",
-          "base_url": "API base URL"
+          "server": "Server",
+          "base_url": "Custom API URL (only when Server is Custom)"
+        },
+        "data_description": {
+          "server": "Pick your region, or Custom to enter an API URL. Global auto-routes to the right region.",
+          "base_url": "e.g. apiieu.hik-connect.com — used only when Server is set to Custom."
         }
       }
     },
     "error": {
       "invalid_auth": "Invalid account or password (a CAPTCHA may be required — open the Hik-Connect app once, then retry).",
-      "cannot_connect": "Could not reach Hik-Connect."
+      "cannot_connect": "Could not reach Hik-Connect.",
+      "custom_url_required": "Select a server, or choose Custom and enter an API URL."
     },
     "abort": {
       "already_configured": "This account is already configured."
