@@ -163,7 +163,7 @@ class HikLocalCamera(Camera):
             client = await self._open_client()
             if client is None:
                 return self._jpeg
-            decoder = HikStreamDecoder()
+            decoder = HikStreamDecoder(self._cam.channel)
             proc = await asyncio.create_subprocess_exec(
                 self._ffmpeg(), "-loglevel", "error",
                 "-fflags", "+discardcorrupt", "-f", "h264", "-i", "pipe:0",
@@ -193,7 +193,7 @@ class HikLocalCamera(Camera):
             client = await self._open_client()
             if client is None:
                 return web.Response(status=503, text="no live feed")
-            decoder = HikStreamDecoder()
+            decoder = HikStreamDecoder(self._cam.channel)
             proc = await asyncio.create_subprocess_exec(
                 self._ffmpeg(), "-loglevel", "warning",
                 "-fflags", "+discardcorrupt", "-f", "h264", "-i", "pipe:0",

@@ -35,7 +35,12 @@ class HikStreamDecoder:
         annexb = d.take()
     """
 
-    def __init__(self) -> None:
+    def __init__(self, interleave: int = 1) -> None:
+        # RTSP-interleaved channel byte after '$'; equals the CPD7 channel
+        # (ch1 -> $\x01, ch2 -> $\x02, ...).  Syncing on the wrong channel
+        # locks onto stray 0x24 bytes in the payload and emits garbage.
+        self._interleave = interleave & 0xFF
+        self._marker = bytes([0x24, self._interleave])
         self._buf = bytearray()
         self._out = bytearray()
         self._synced = False
@@ -58,9 +63,9 @@ class HikStreamDecoder:
 
     # -- internals --------------------------------------------------------
     def _consume_one_chunk(self) -> bool:
-        # Resync to the first RTSP-interleaved marker ($ + channel 0x01).
+        # Resync to the first RTSP-interleaved marker ($ + this channel).
         if not self._synced:
-            i = self._buf.find(b"\x24\x01")
+            i = self._buf.find(self._marker)
             if i < 0:
                 # keep only the last byte in case '$' straddles a read boundary
                 if len(self._buf) > 1:
@@ -71,7 +76,7 @@ class HikStreamDecoder:
 
         if len(self._buf) < 4:
             return False
-        if self._buf[0] != 0x24:
+        if self._buf[0] != 0x24 or self._buf[1] != self._interleave:
             self._synced = False
             return True
         plen = struct.unpack(">H", bytes(self._buf[2:4]))[0]

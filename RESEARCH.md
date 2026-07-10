@@ -175,13 +175,18 @@ Confirmed on our device:
 our indoor station sends **UNENCRYPTED** media. Wire framing per media unit:
 
 ```
-$ \x01 <len:2 BE>            # RTSP-interleaved
+$ <ch:1> <len:2 BE>         # RTSP-interleaved; ch == CPD7 channel (ch1 -> \x01, ch2 -> \x02)
   <12-byte RTP header>       # 80 60 <seq> <ts> <ssrc=session>
   <13-byte Hikvision header> # payload[0]=0x0d, contains a per-packet counter
   <RFC 6184 H.264 payload>   # 0x67 SPS / 0x68 PPS / single NAL / 0x7c FU-A
 ```
 
-Decode = strip `$\x01` framing → drop 12-byte RTP + 13-byte Hik header →
+The RTSP-interleave channel byte **equals the CPD7 channel** (Main Door Station
+ch1 → `$\x01`, Sub Door Station ch2 → `$\x02`). The decoder MUST sync on
+`$<ch>`, not a hard-coded `$\x01`; otherwise a non-ch1 stream is missed entirely
+and stray `0x24` bytes inside the payload get parsed as garbage NALs.
+
+Decode = strip `$<ch>` framing → drop 12-byte RTP + 13-byte Hik header →
 standard RFC 6184 depacketize (single-NAL / STAP-A / FU-A) → Annex-B H.264.
 Verified: `ffprobe` → **H.264 Baseline 1280×720 25 fps**, decodes to a clean live
 frame of the door. See scratchpad `decode_native.py`.
