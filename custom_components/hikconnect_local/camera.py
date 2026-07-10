@@ -72,17 +72,25 @@ class HikLocalCamera(Camera):
             )
         return self._key
 
-    async def _open_client(self) -> Cpd7LanClient:
-        key = await self._control_key()
-        c = Cpd7LanClient(
-            self._cam.local_ip,
-            self._cam.serial,
-            key.encode("ascii"),
-            channel=self._cam.channel,
-            encrypt_stream=True,
-        )
-        await self.hass.async_add_executor_job(c.start)
-        return c
+    async def _open_client(self) -> Cpd7LanClient | None:
+        """Open a CPD7 stream, or None if the channel has no live feed."""
+        try:
+            key = await self._control_key()
+            c = Cpd7LanClient(
+                self._cam.local_ip,
+                self._cam.serial,
+                key.encode("ascii"),
+                channel=self._cam.channel,
+                encrypt_stream=True,
+            )
+            await self.hass.async_add_executor_job(c.start)
+            return c
+        except Exception as err:  # noqa: BLE001 - offline sub-stations error here
+            _LOGGER.debug(
+                "no live feed for %s ch%d (%s): %s",
+                self._cam.serial, self._cam.channel, self._cam.name, err,
+            )
+            return None
 
     async def _pump(self, client: Cpd7LanClient, decoder: HikStreamDecoder, writer) -> None:
         """Read CPD7 chunks (executor) -> decode -> write H.264 to ffmpeg stdin."""
@@ -125,6 +133,8 @@ class HikLocalCamera(Camera):
     ) -> bytes | None:
         async with self._lock:
             client = await self._open_client()
+            if client is None:
+                return None
             decoder = HikStreamDecoder()
             proc = await asyncio.create_subprocess_exec(
                 self._ffmpeg(), "-loglevel", "error",
@@ -147,6 +157,8 @@ class HikLocalCamera(Camera):
     async def handle_async_mjpeg_stream(self, request: web.Request) -> web.StreamResponse:
         async with self._lock:
             client = await self._open_client()
+            if client is None:
+                return web.Response(status=503, text="no live feed")
             decoder = HikStreamDecoder()
             proc = await asyncio.create_subprocess_exec(
                 self._ffmpeg(), "-loglevel", "warning",
