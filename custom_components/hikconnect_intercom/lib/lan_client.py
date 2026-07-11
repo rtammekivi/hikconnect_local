@@ -47,6 +47,21 @@ PLACEHOLDER_OP_CODE = "ABCDEFG"
 INIT_SESSION_ID = 10011
 
 
+class ControlKeyError(ConnectionError):
+    """The station rejected our request — the AES control key is stale.
+
+    The device rotates its control key across firmware/security changes; every
+    request is encrypted with it, so a stale key makes the device fail to decrypt
+    and answer ``<Result>3</Result>`` to INIT/device-info/invite alike.  Callers
+    should refetch the key from the cloud and retry.
+    """
+
+
+def _result_code(plain: bytes) -> int | None:
+    m = re.search(rb"<Result>(\d+)</Result>", plain)
+    return int(m.group(1)) if m else None
+
+
 def _encrypt(key: bytes, plaintext: bytes) -> bytes:
     return AES.new(key, AES.MODE_CBC, AES_IV).encrypt(pad(plaintext, AES.block_size))
 
@@ -256,9 +271,14 @@ class Cpd7LanClient:
             (self._host, PORT_CTRL), timeout=self._connect_timeout
         )
         try:
-            self._send_cmd(sock_ctrl, 1, CMD_INIT, _xml_init(INIT_SESSION_ID), "INIT")
+            _, init_plain = self._send_cmd(
+                sock_ctrl, 1, CMD_INIT, _xml_init(INIT_SESSION_ID), "INIT"
+            )
         finally:
             sock_ctrl.close()
+        init_result = _result_code(init_plain)
+        if init_result not in (0, None):
+            raise ControlKeyError(f"INIT refused (Result {init_result})")
 
         # INVITE
         sock_inv = socket.create_connection(
@@ -282,6 +302,9 @@ class Cpd7LanClient:
 
         m = re.search(rb"<Session>(\d+)</Session>", resp_plain)
         if not m:
+            invite_result = _result_code(resp_plain)
+            if invite_result not in (0, None):
+                raise ControlKeyError(f"INVITE refused (Result {invite_result})")
             raise ConnectionError(
                 "no <Session> in InviteStream response: "
                 + resp_plain[:200].decode(errors="replace")

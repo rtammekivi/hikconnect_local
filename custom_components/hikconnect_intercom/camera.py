@@ -30,7 +30,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN, MJPEG_FPS, MJPEG_HEIGHT, MJPEG_QUALITY, MJPEG_WIDTH
 from .hikconnect_api import HikCamera
 from .lib.hik_decoder import HikStreamDecoder
-from .lib.lan_client import Cpd7LanClient
+from .lib.lan_client import ControlKeyError, Cpd7LanClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -86,33 +86,52 @@ class HikLocalCamera(Camera):
         return DeviceInfo(identifiers={(DOMAIN, self._cam.serial)})
 
     # -- stream plumbing --------------------------------------------------
-    async def _control_key(self) -> str:
-        if self._key is None:
+    async def _control_key(self, refresh: bool = False) -> str:
+        if self._key is None or refresh:
             self._key, _ = await self.hass.async_add_executor_job(
                 self._client.get_control_key, self._cam.serial
             )
         return self._key
 
     async def _open_client(self) -> Cpd7LanClient | None:
-        """Open a CPD7 stream, or None if the channel has no live feed."""
-        try:
-            key = await self._control_key()
-            c = Cpd7LanClient(
-                self._cam.local_ip,
-                self._cam.serial,
-                key.encode("ascii"),
-                channel=self._cam.channel,
-                encrypt_stream=True,
-                stream_type=self._quality.get(self._qkey, "MAIN"),
-            )
-            await self.hass.async_add_executor_job(c.start)
-            return c
-        except Exception as err:  # noqa: BLE001 - offline sub-stations error here
-            _LOGGER.debug(
-                "no live feed for %s ch%d (%s): %s",
-                self._cam.serial, self._cam.channel, self._cam.name, err,
-            )
-            return None
+        """Open a CPD7 stream, or None if the channel has no live feed.
+
+        The station rotates its control key across firmware/security changes; a
+        stale cached key makes it reject the stream (``Result 3``).  Retry once
+        with a freshly fetched key so the feed self-heals without a reload.
+        """
+        for refresh in (False, True):
+            try:
+                key = await self._control_key(refresh=refresh)
+                c = Cpd7LanClient(
+                    self._cam.local_ip,
+                    self._cam.serial,
+                    key.encode("ascii"),
+                    channel=self._cam.channel,
+                    encrypt_stream=True,
+                    stream_type=self._quality.get(self._qkey, "MAIN"),
+                )
+                await self.hass.async_add_executor_job(c.start)
+                return c
+            except ControlKeyError as err:
+                self._key = None  # drop the stale key so the retry refetches
+                if refresh:
+                    _LOGGER.warning(
+                        "live feed still refused for %s ch%d (%s) after key refresh: %s",
+                        self._cam.serial, self._cam.channel, self._cam.name, err,
+                    )
+                    return None
+                _LOGGER.debug(
+                    "control key stale for %s ch%d — refetching and retrying",
+                    self._cam.serial, self._cam.channel,
+                )
+            except Exception as err:  # noqa: BLE001 - offline sub-stations error here
+                _LOGGER.debug(
+                    "no live feed for %s ch%d (%s): %s",
+                    self._cam.serial, self._cam.channel, self._cam.name, err,
+                )
+                return None
+        return None
 
     async def _pump(self, client: Cpd7LanClient, decoder: HikStreamDecoder, writer) -> None:
         empty = 0
