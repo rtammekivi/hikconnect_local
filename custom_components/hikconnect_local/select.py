@@ -33,7 +33,6 @@ async def async_setup_entry(
 
 class HikStreamQualitySelect(SelectEntity, RestoreEntity):
     _attr_has_entity_name = True
-    _attr_name = "Stream quality"
     _attr_icon = "mdi:high-definition"
     _attr_options = list(_OPTION_TO_STREAM)
     _attr_entity_category = EntityCategory.CONFIG
@@ -42,6 +41,7 @@ class HikStreamQualitySelect(SelectEntity, RestoreEntity):
         self._cam = cam
         self._quality = quality
         self._qkey = f"{cam.serial}_ch{cam.channel}"
+        self._attr_name = f"{cam.name} stream quality"
         self._attr_unique_id = f"{DOMAIN}_{self._qkey}_quality"
         self._attr_current_option = "HD"
         self._quality.setdefault(self._qkey, "MAIN")
