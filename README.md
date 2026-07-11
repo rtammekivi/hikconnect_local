@@ -17,11 +17,10 @@ access**:
 - **Video is local.** The live stream is pulled **directly from the station over
   your LAN** (CPD7 protocol, ports 9010/9020), decrypted/de-framed in pure Python
   and served to HA as MJPEG — no cloud relay for the video.
-- **Everything else is cloud**, using the same calls the app makes (authorized by
-  your account session, no admin password): device discovery + LAN IP, the
-  per-device stream key (CAS), door unlock, answer/hang-up/cancel, call status,
-  volumes, Do-Not-Disturb, time, and telemetry — via the Hik-Connect cloud and its
-  ISAPI passthrough.
+- **Everything else is cloud**, using the same calls the app makes with your
+  account session: device discovery + LAN IP, the per-device stream key (CAS),
+  door unlock, answer/hang-up/cancel, call status, volumes, Do-Not-Disturb, time,
+  and telemetry — via the Hik-Connect cloud and its ISAPI passthrough.
 
 > ⚠️ **Hybrid, not local-only.** Only the *video* is local (pulled from the station
 > over your LAN — the hard part, and the differentiator from cloud-relay
@@ -46,12 +45,11 @@ Cpd7LanClient (9010 INIT/INVITE/PLAY, AES-128-CBC control) ──► 9020 stream
         └─► ffmpeg H.264 ─► MJPEG ─► Home Assistant camera
 ```
 
-**Controls / config / status (cloud):** relayed through the Hik-Connect cloud —
-`/api/device/isapi` tunnels **standard Hikvision ISAPI** to the device (volumes,
-time), `/v3/devconfig/.../remote/unlock` and `/call/.../operation` handle door +
-call ops, `configTimeZone` + `nodisturb` cover DST + Do-Not-Disturb — **all
-authorized by your account session, no device admin password needed.** This is
-what makes the integration usable on locked-down apartment installs.
+**Controls / config / status (cloud):** relayed through the Hik-Connect cloud with
+your account session — `/api/device/isapi` tunnels **standard Hikvision ISAPI** to
+the device (volumes, time), `/v3/devconfig/.../remote/unlock` and
+`/call/.../operation` handle door + call ops, and `configTimeZone` + `nodisturb`
+cover DST + Do-Not-Disturb.
 
 ## Install (HACS)
 
@@ -75,9 +73,8 @@ A camera entity is created for each LAN-reachable device. Live view uses MJPEG
 - **Call status sensor** — `idle` / `ringing` / `call in progress`. State comes
   from the authoritative cloud poll; a realtime MQTT push event triggers an
   immediate re-poll so ringing shows in near real time.
-- **Volume numbers** — Ringtone / Two-way audio / Microphone (0-10), driven via
-  the Hik-Connect cloud **ISAPI passthrough** (`/api/device/isapi`) — standard
-  Hikvision ISAPI relayed by the account session, no device admin password.
+- **Volume numbers** — Ringtone / Two-way audio / Microphone (0-10), via the
+  Hik-Connect cloud **ISAPI passthrough** (`/api/device/isapi`).
 - **Do Not Disturb switch** — account-level; when on, calls from the device are
   silenced (`/v3/unifiedmsg/notify/nodisturb`).
 - **Daylight-saving switch** — device time config (`/api/device/configTimeZone`).
@@ -85,9 +82,8 @@ A camera entity is created for each LAN-reachable device. Live view uses MJPEG
   WiFi signal, LAN IP, WAN IP, connection type, storage capacity, last-offline.
 - **Stream quality select** — HD (main) / SD (sub) per camera.
 
-All controls, config, and status go through the Hik-Connect **cloud** (authorized
-by your account, no admin password) — the same operations the app performs. Only
-the **video** is pulled locally over the LAN.
+All controls, config, and status go through the Hik-Connect **cloud** — the same
+operations the app performs. Only the **video** is pulled locally over the LAN.
 
 ## Status / limits
 
@@ -118,6 +114,5 @@ Built on the shoulders of others — thank you:
 
 What's new here (this project): the Hik-Connect account auth path, the unencrypted
 Hik-Connect media decoder (`lib/hik_decoder.py`), and the cloud **ISAPI passthrough**
-(`/api/device/isapi`) that drives volumes, time, and other settings with just the
-account session — no device admin password. See `THIRD_PARTY_LICENSES.md` for the
-exact vendored files and their licenses.
+(`/api/device/isapi`) that drives volumes, time, and other settings. See
+`THIRD_PARTY_LICENSES.md` for the exact vendored files and their licenses.

@@ -210,7 +210,7 @@ class HikConnectClient:
 
     # -- ISAPI over the cloud passthrough ---------------------------------
     def isapi(self, serial: str, method: str, path: str, body: str = "") -> dict:
-        """Relay an ISAPI request to the device via the cloud (no admin pw)."""
+        """Relay an ISAPI request to the device through the Hik-Connect cloud."""
         data = {
             "subSerial": serial,
             "cmdId": "19713",
