@@ -35,6 +35,7 @@ PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.SELECT,
     Platform.NUMBER,
+    Platform.SWITCH,
 ]
 
 
@@ -97,6 +98,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     status[dev.serial]["volumes"] = client.get_audio_volumes(dev.serial)
                 except Exception as err:  # noqa: BLE001
                     _LOGGER.debug("volume fetch failed for %s: %s", dev.serial, err)
+                try:
+                    status[dev.serial]["dnd"] = client.get_dnd(dev.serial)
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("dnd fetch failed for %s: %s", dev.serial, err)
         return status
 
     async def _poll_status() -> dict[str, dict]:

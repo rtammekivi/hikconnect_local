@@ -261,6 +261,43 @@ class HikConnectClient:
         )
         self.isapi(serial, "PUT", "/ISAPI/System/Audio/AudioOut/channels/1", body)
 
+    # -- Do Not Disturb + time config -------------------------------------
+    def get_dnd(self, serial: str) -> bool | None:
+        """True if DND is on (account won't receive calls from the device)."""
+        j = self._get(f"/v3/unifiedmsg/notify/nodisturb?devices={serial}&type=27")
+        for entry in j.get("deviceData") or []:
+            if serial in entry:
+                return entry[serial] is False  # inverted: false == disturbed/off
+        return None
+
+    def set_dnd(self, serial: str, on: bool) -> None:
+        self._session.post(
+            f"{self._base}/v3/unifiedmsg/notify/nodisturb",
+            data={"devices": serial, "type": "27",
+                  "enableNoDisturb": "true" if on else "false"},
+            timeout=25,
+        )
+
+    def set_time_config(
+        self, serial: str, *, daylight_saving, time_zone, time_zone_no, time_format
+    ) -> None:
+        """Time zone / DST / date format (all via one endpoint)."""
+        self._session.post(
+            f"{self._base}/api/device/configTimeZone",
+            data={
+                "deviceSerialNo": serial,
+                "daylightSaving": str(daylight_saving),
+                "timeZone": time_zone or "UTC+00:00",
+                "timeZoneNo": str(time_zone_no or 0),
+                "timeFormat": str(time_format or 2),
+                "time": "",
+                "areaId": "105",
+                "clientType": "55",
+                "sessionId": self._session_id or "",
+            },
+            timeout=25,
+        )
+
     # -- device status / metrics ------------------------------------------
     def get_device_status_map(self) -> dict[str, dict]:
         """Per-serial telemetry parsed from the cloud device list."""
@@ -304,6 +341,10 @@ class HikConnectClient:
                     if disk_num
                     else None,
                     "offline_timestamp": d.get("offlineTimestamp"),
+                    "dst": opt.get("daylightSavingTime") == "1",
+                    "time_zone": opt.get("timeZone"),
+                    "time_zone_no": opt.get("tzCode"),
+                    "time_format": opt.get("timeFormat"),
                 }
             offset += limit
             has_next = (j.get("page") or {}).get("hasNext", False)

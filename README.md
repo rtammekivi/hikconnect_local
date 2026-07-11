@@ -55,6 +55,9 @@ A camera entity is created for each LAN-reachable device. Live view uses MJPEG
 - **Volume numbers** — Ringtone / Two-way audio / Microphone (0-10), driven via
   the Hik-Connect cloud **ISAPI passthrough** (`/api/device/isapi`) — standard
   Hikvision ISAPI relayed by the account session, no device admin password.
+- **Do Not Disturb switch** — account-level; when on, calls from the device are
+  silenced (`/v3/unifiedmsg/notify/nodisturb`).
+- **Daylight-saving switch** — device time config (`/api/device/configTimeZone`).
 - **Diagnostics** — connectivity, firmware-update, storage health binary sensors;
   WiFi signal, WAN IP, connection type, storage capacity, last-offline sensors.
 - **Stream quality select** — HD (main) / SD (sub) per camera.
