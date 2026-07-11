@@ -325,6 +325,7 @@ class HikConnectClient:
                     "online": (gs == 1) if gs is not None else (d.get("status") == 1),
                     "version": d.get("version"),
                     "model": d.get("deviceType"),
+                    "local_ip": self._clean_ip(conn.get("localIp")),
                     "wan_ip": self._clean_ip(conn.get("netIp") or opt.get("wanIp")),
                     "wifi_signal": wifi.get("signal")
                     if isinstance(wifi.get("signal"), int)

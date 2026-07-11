@@ -41,6 +41,8 @@ def _last_offline(status: dict):
 _METRICS = (
     ("wifi_signal", "WiFi signal", "mdi:wifi", "%", None,
      SensorStateClass.MEASUREMENT, None, lambda s: s.get("wifi_signal")),
+    ("local_ip", "LAN IP", "mdi:ip-network-outline", None, None, None, None,
+     lambda s: s.get("local_ip")),
     ("wan_ip", "WAN IP", "mdi:ip-network", None, None, None, None,
      lambda s: s.get("wan_ip")),
     ("connection_type", "Connection type", "mdi:lan", None,
