@@ -27,7 +27,7 @@ async def async_setup_entry(
             HikBinary(
                 coordinator, dev.serial, "connectivity", "Connectivity",
                 lambda s: s.get("online"),
-                BinarySensorDeviceClass.CONNECTIVITY, None,
+                BinarySensorDeviceClass.CONNECTIVITY, EntityCategory.DIAGNOSTIC,
             )
         )
         entities.append(

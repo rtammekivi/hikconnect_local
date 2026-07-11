@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -40,6 +41,7 @@ async def async_setup_entry(
 
 class HikVolumeNumber(CoordinatorEntity, NumberEntity):
     _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min_value = 0
     _attr_native_max_value = 10
     _attr_native_step = 1
