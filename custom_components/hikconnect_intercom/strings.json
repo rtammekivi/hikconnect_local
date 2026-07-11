@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Hik-Connect Intercom",
-        "description": "Log in with your Hik-Connect account. The video is pulled directly from the indoor station over your LAN (CPD7); the cloud is used only to fetch the device list and per-device stream key.",
+        "description": "Log in with your Hik-Connect account — no device admin password needed. Live video streams directly from the station over your LAN; device discovery and all controls (unlock, calls, volumes, etc.) go through the Hik-Connect cloud.",
         "data": {
           "account": "Account (email or username)",
           "password": "Password",
