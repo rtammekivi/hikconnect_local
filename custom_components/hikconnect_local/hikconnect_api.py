@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -260,6 +261,25 @@ class HikConnectClient:
             "</AudioOutVlome></AudioOutVolumelist><id>1</id></AudioOut>"
         )
         self.isapi(serial, "PUT", "/ISAPI/System/Audio/AudioOut/channels/1", body)
+
+    def set_time_now(self, serial: str) -> None:
+        """Set the device clock to the current time (switches it to manual mode)."""
+        cur = self.isapi(serial, "GET", "/ISAPI/System/time").get("data") or ""
+        tzm = re.search(r"<timeZone>([^<]*)</timeZone>", cur)
+        ltm = re.search(r"<localTime>([^<]+)</localTime>", cur)
+        tz = tzm.group(1) if tzm else "CST0:00:00"
+        lt = ltm.group(1) if ltm else ""
+        off = lt[-6:] if len(lt) >= 6 and lt[-6] in "+-" else "+00:00"
+        delta = (1 if off[0] == "+" else -1) * timedelta(
+            hours=int(off[1:3]), minutes=int(off[4:6])
+        )
+        local = (datetime.now(timezone.utc) + delta).strftime("%Y-%m-%dT%H:%M:%S") + off
+        body = (
+            '<Time version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema">'
+            f"<timeMode>manual</timeMode><localTime>{local}</localTime>"
+            f"<timeZone>{tz}</timeZone></Time>"
+        )
+        self.isapi(serial, "PUT", "/ISAPI/System/time", body)
 
     # -- Do Not Disturb + time config -------------------------------------
     def get_dnd(self, serial: str) -> bool | None:

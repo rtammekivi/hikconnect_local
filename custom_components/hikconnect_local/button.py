@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -31,6 +32,7 @@ async def async_setup_entry(
     for dev in data["devices"]:
         if dev.locks:
             entities.append(HikUnlockAllButton(hass, client, dev))
+            entities.append(HikSyncTimeButton(hass, client, dev.serial))
     async_add_entities(entities)
 
 
@@ -80,3 +82,27 @@ class HikUnlockAllButton(ButtonEntity):
                     self._client.unlock(self._dev.serial, channel, idx)
 
         await self.hass.async_add_executor_job(work)
+
+
+class HikSyncTimeButton(ButtonEntity):
+    """Set the station clock to Home Assistant's current time."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Sync time"
+    _attr_icon = "mdi:clock-check"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, hass, client, serial):
+        self.hass = hass
+        self._client = client
+        self._serial = serial
+        self._attr_unique_id = f"{DOMAIN}_{serial}_sync_time"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._serial)})
+
+    async def async_press(self) -> None:
+        await self.hass.async_add_executor_job(
+            self._client.set_time_now, self._serial
+        )
