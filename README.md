@@ -98,3 +98,26 @@ the **video** is pulled locally over the LAN.
   phone app's live view if a stream won't start.
 
 See `RESEARCH.md` for the full protocol reverse-engineering notes.
+
+## Credits & prior work
+
+Built on the shoulders of others — thank you:
+
+- **[Bobsilvio/ezviz_hp7](https://github.com/Bobsilvio/ezviz_hp7)** — the EZVIZ HP7
+  CPD7 integration this project started as a fork of; the local `lan_client` and
+  ECDH/ChaCha20 `crypto` are vendored from it.
+- **[albrzmr/ezviz_hp7](https://github.com/albrzmr/ezviz_hp7)** — original
+  reverse-engineering of the CPD7 LAN streaming protocol.
+- **[RenierM26/pyEzvizApi](https://github.com/RenierM26/pyEzvizApi)** — the EZVIZ
+  CAS client (vendored as `lib/cas.py`) and the EZVIZ MQTT push protocol used for
+  realtime call events.
+- **[tomasbedrich/home-assistant-hikconnect](https://github.com/tomasbedrich/home-assistant-hikconnect)**
+  and its `hikconnect` library — the original Hik-Connect HA integration; the
+  door-unlock and answer/hang-up/cancel call endpoints and entity patterns come
+  from there.
+
+What's new here (this project): the Hik-Connect account auth path, the unencrypted
+Hik-Connect media decoder (`lib/hik_decoder.py`), and the cloud **ISAPI passthrough**
+(`/api/device/isapi`) that drives volumes, time, and other settings with just the
+account session — no device admin password. See `THIRD_PARTY_LICENSES.md` for the
+exact vendored files and their licenses.
