@@ -47,10 +47,17 @@ A camera entity is created for each LAN-reachable device. Live view uses MJPEG
 - **Camera** — one per real door-station channel (native local CPD7 video).
 - **Lock** — one per unlock-capable channel; opens the door latch (momentary,
   auto-relocks after a few seconds). Uses the cloud remote-unlock endpoint.
-- **Buttons** — *Answer call*, *Hang up call*, *Cancel call* (cloud call ops).
+- **Buttons** — *Answer call*, *Hang up call*, *Cancel call* (cloud call ops),
+  and *Unlock all doors* (opens every lock-capable channel at once).
 - **Call status sensor** — `idle` / `ringing` / `call in progress`. State comes
   from the authoritative cloud poll; a realtime MQTT push event triggers an
   immediate re-poll so ringing shows in near real time.
+- **Volume numbers** — Ringtone / Two-way audio / Microphone (0-10), driven via
+  the Hik-Connect cloud **ISAPI passthrough** (`/api/device/isapi`) — standard
+  Hikvision ISAPI relayed by the account session, no device admin password.
+- **Diagnostics** — connectivity, firmware-update, storage health binary sensors;
+  WiFi signal, WAN IP, connection type, storage capacity, last-offline sensors.
+- **Stream quality select** — HD (main) / SD (sub) per camera.
 
 Call/door controls and status go through the Hik-Connect cloud (the video stays
 fully local). Unlock/answer/hangup/cancel are the same operations the app sends.

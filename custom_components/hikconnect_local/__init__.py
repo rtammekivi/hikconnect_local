@@ -34,6 +34,7 @@ PLATFORMS = [
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
     Platform.SELECT,
+    Platform.NUMBER,
 ]
 
 
@@ -88,8 +89,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     await coordinator.async_config_entry_first_refresh()
 
+    def _status_work() -> dict[str, dict]:
+        status = client.get_device_status_map()
+        for dev in devices:
+            if dev.locks and dev.serial in status:
+                try:
+                    status[dev.serial]["volumes"] = client.get_audio_volumes(dev.serial)
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("volume fetch failed for %s: %s", dev.serial, err)
+        return status
+
     async def _poll_status() -> dict[str, dict]:
-        return await hass.async_add_executor_job(client.get_device_status_map)
+        return await hass.async_add_executor_job(_status_work)
 
     status_coordinator = DataUpdateCoordinator(
         hass,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -205,6 +206,60 @@ class HikConnectClient:
         data = json.loads(r["data"])
         status = _CALL_STATUS.get(data.get("callStatus"), "unknown")
         return {"status": status, "info": data.get("callerInfo") or {}}
+
+    # -- ISAPI over the cloud passthrough ---------------------------------
+    def isapi(self, serial: str, method: str, path: str, body: str = "") -> dict:
+        """Relay an ISAPI request to the device via the cloud (no admin pw)."""
+        data = {
+            "subSerial": serial,
+            "cmdId": "19713",
+            "transmissionData": f"{method} {path}\r\n{body}",
+            "clientType": "55",
+            "sessionId": self._session_id or "",
+            "lang": "2",
+        }
+        return self._session.post(
+            f"{self._base}/api/device/isapi", data=data, timeout=25
+        ).json()
+
+    def get_audio_volumes(self, serial: str) -> dict[str, int | None]:
+        """Ringtone / two-way / microphone volume (0-10) via ISAPI."""
+
+        def grab(xml: str, tag: str) -> int | None:
+            m = re.search(rf"<{tag}>(\d+)</{tag}>", xml or "")
+            return int(m.group(1)) if m else None
+
+        ao = self.isapi(serial, "GET", "/ISAPI/System/Audio/AudioOut/channels/1")
+        ai = self.isapi(serial, "GET", "/ISAPI/System/Audio/AudioIn/channels/1")
+        return {
+            "two_way": grab(ao.get("data"), "talkVolume"),
+            "ringtone": grab(ao.get("data"), "volume"),
+            "microphone": grab(ai.get("data"), "volume"),
+        }
+
+    def set_audio_volume(self, serial: str, kind: str, value: int) -> None:
+        """Set one volume (kind: two_way|ringtone|microphone), 0-10."""
+        value = max(0, min(10, int(value)))
+        if kind == "microphone":
+            body = (
+                "<AudioIn><AudioInVolumelist><AudioInVlome><type>audioInput</type>"
+                f"<volume>{value}</volume></AudioInVlome></AudioInVolumelist>"
+                "<id>1</id></AudioIn>"
+            )
+            self.isapi(serial, "PUT", "/ISAPI/System/Audio/AudioIn/channels/1", body)
+            return
+        # AudioOut carries both talkVolume (two-way) and volume (ringtone);
+        # ISAPI PUT replaces the resource, so preserve the other field.
+        cur = self.get_audio_volumes(serial)
+        talk = value if kind == "two_way" else (cur.get("two_way") or 5)
+        vol = value if kind == "ringtone" else (cur.get("ringtone") or 5)
+        body = (
+            "<AudioOut><AudioOutVolumelist><AudioOutVlome>"
+            f"<talkVolume>{talk}</talkVolume><type>audioOutput</type>"
+            f"<volume>{vol}</volume>"
+            "</AudioOutVlome></AudioOutVolumelist><id>1</id></AudioOut>"
+        )
+        self.isapi(serial, "PUT", "/ISAPI/System/Audio/AudioOut/channels/1", body)
 
     # -- device status / metrics ------------------------------------------
     def get_device_status_map(self) -> dict[str, dict]:
