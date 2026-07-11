@@ -8,6 +8,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 
@@ -104,5 +105,5 @@ class HikSyncTimeButton(ButtonEntity):
 
     async def async_press(self) -> None:
         await self.hass.async_add_executor_job(
-            self._client.set_time_now, self._serial
+            self._client.set_time_now, self._serial, dt_util.now()
         )
