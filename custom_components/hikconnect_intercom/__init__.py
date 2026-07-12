@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
     CALL_POLL_INTERVAL,
@@ -23,7 +23,7 @@ from .const import (
     STATUS_POLL_INTERVAL,
     call_signal,
 )
-from .hikconnect_api import HikConnectAuthError, HikConnectClient
+from .hikconnect_api import HikConnectAuthError, HikConnectClient, HikConnectError
 from .push import HikConnectPush
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for dev in devices:
                 try:
                     out[dev.serial] = client.get_call_status(dev.serial)
+                except HikConnectError as err:
+                    raise UpdateFailed(f"call status poll failed for {dev.serial}: {err}") from err
                 except Exception as err:  # noqa: BLE001
                     _LOGGER.debug("call status poll failed for %s: %s", dev.serial, err)
                     out[dev.serial] = {"status": "unknown", "info": {}}
@@ -92,16 +94,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _status_work() -> dict[str, dict]:
         status = client.get_device_status_map()
+        missing = [d.serial for d in devices if d.serial not in status]
+        if missing:
+            # The cloud answers an expired session with a well-formed 401 and an
+            # empty device list, so silence here would read as "no data" forever.
+            raise UpdateFailed(f"cloud returned no data for {', '.join(missing)}")
         for dev in devices:
-            if dev.locks and dev.serial in status:
+            if dev.locks:
                 try:
                     status[dev.serial]["volumes"] = client.get_audio_volumes(dev.serial)
                 except Exception as err:  # noqa: BLE001
-                    _LOGGER.debug("volume fetch failed for %s: %s", dev.serial, err)
+                    _LOGGER.warning("volume fetch failed for %s: %s", dev.serial, err)
                 try:
                     status[dev.serial]["dnd"] = client.get_dnd(dev.serial)
                 except Exception as err:  # noqa: BLE001
-                    _LOGGER.debug("dnd fetch failed for %s: %s", dev.serial, err)
+                    _LOGGER.warning("dnd fetch failed for %s: %s", dev.serial, err)
         return status
 
     async def _poll_status() -> dict[str, dict]:

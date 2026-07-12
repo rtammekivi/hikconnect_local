@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any
@@ -61,8 +62,12 @@ class HikCamera:
     local_ip: str
 
 
-class HikConnectAuthError(Exception):
-    """Login failed."""
+class HikConnectError(Exception):
+    """The cloud call failed."""
+
+
+class HikConnectAuthError(HikConnectError):
+    """Login failed, or the session expired and could not be renewed."""
 
 
 class HikConnectClient:
@@ -77,6 +82,7 @@ class HikConnectClient:
         self._session_id: str | None = None
         self._username: str | None = None
         self._sysconf: list[str] = []
+        self._auth_lock = threading.Lock()
 
     # -- auth -------------------------------------------------------------
     def login(self) -> None:
@@ -84,10 +90,10 @@ class HikConnectClient:
             "account": self._account,
             "password": hashlib.md5(self._password.encode("utf-8")).hexdigest(),
         }
-        r = self._post("/v3/users/login/v2", data)
+        r = self._raw("POST", "/v3/users/login/v2", data)
         if r["meta"]["code"] == 1100:  # region redirect
             self._base = "https://" + r["loginArea"]["apiDomain"]
-            r = self._post("/v3/users/login/v2", data)
+            r = self._raw("POST", "/v3/users/login/v2", data)
         code = r["meta"]["code"]
         if code in (1013, 1014):
             raise HikConnectAuthError("bad username/password")
@@ -98,9 +104,17 @@ class HikConnectClient:
         self._session_id = r["loginSession"]["sessionId"]
         self._username = r["loginUser"]["username"]
         self._session.headers["sessionId"] = self._session_id
-        sci = self._get("/v3/configurations/system/info")["systemConfigInfo"]
+        sci = self._raw("GET", "/v3/configurations/system/info")["systemConfigInfo"]
         self._sysconf = str(sci.get("sysConf", "")).split("|")
         _LOGGER.debug("Hik-Connect login ok user=%s base=%s", self._username, self._base)
+
+    def _relogin(self, stale_session_id: str | None) -> None:
+        """Re-authenticate once, even if several threads notice the 401 together."""
+        with self._auth_lock:
+            if self._session_id != stale_session_id:
+                return  # another thread already refreshed it
+            _LOGGER.warning("Hik-Connect session expired — re-authenticating")
+            self.login()
 
     # -- devices ----------------------------------------------------------
     def get_devices(self) -> list[HikDevice]:
@@ -177,10 +191,22 @@ class HikConnectClient:
         }
 
     def get_control_key(self, serial: str) -> tuple[str, str]:
-        """Return (aes_key, operation_code) for the device from the shared CAS."""
-        doc = EzvizCAS(self.cas_token).cas_get_encryption(serial)
-        session = doc["Response"]["Session"]
-        return session["@Key"], session["@OperationCode"]
+        """Return (aes_key, operation_code) for the device from the shared CAS.
+
+        CAS authenticates with the account session, so it fails once that expires;
+        renew and retry rather than leaving the cameras with no key.
+        """
+        for attempt in (1, 2):
+            try:
+                doc = EzvizCAS(self.cas_token).cas_get_encryption(serial)
+                session = doc["Response"]["Session"]
+                return session["@Key"], session["@OperationCode"]
+            except Exception as err:  # noqa: BLE001 - CAS raises many shapes
+                if attempt == 2:
+                    raise HikConnectError(f"CAS key fetch failed for {serial}: {err}") from err
+                _LOGGER.debug("CAS key fetch failed (%s) — re-authenticating", err)
+                self._relogin(self._session_id)
+        raise AssertionError("unreachable")
 
     # -- call / door controls (cloud) -------------------------------------
     def unlock(self, serial: str, channel: int, lock_index: int = 0) -> dict:
@@ -211,17 +237,18 @@ class HikConnectClient:
     # -- ISAPI over the cloud passthrough ---------------------------------
     def isapi(self, serial: str, method: str, path: str, body: str = "") -> dict:
         """Relay an ISAPI request to the device through the Hik-Connect cloud."""
-        data = {
-            "subSerial": serial,
-            "cmdId": "19713",
-            "transmissionData": f"{method} {path}\r\n{body}",
-            "clientType": "55",
-            "sessionId": self._session_id or "",
-            "lang": "2",
-        }
-        return self._session.post(
-            f"{self._base}/api/device/isapi", data=data, timeout=25
-        ).json()
+
+        def form() -> dict:
+            return {
+                "subSerial": serial,
+                "cmdId": "19713",
+                "transmissionData": f"{method} {path}\r\n{body}",
+                "clientType": "55",
+                "sessionId": self._session_id or "",
+                "lang": "2",
+            }
+
+        return self._call("POST", "/api/device/isapi", form)
 
     def get_audio_volumes(self, serial: str) -> dict[str, int | None]:
         """Ringtone / two-way / microphone volume (0-10) via ISAPI."""
@@ -294,20 +321,19 @@ class HikConnectClient:
         return None
 
     def set_dnd(self, serial: str, on: bool) -> None:
-        self._session.post(
-            f"{self._base}/v3/unifiedmsg/notify/nodisturb",
-            data={"devices": serial, "type": "27",
-                  "enableNoDisturb": "true" if on else "false"},
-            timeout=25,
+        self._post(
+            "/v3/unifiedmsg/notify/nodisturb",
+            {"devices": serial, "type": "27",
+             "enableNoDisturb": "true" if on else "false"},
         )
 
     def set_time_config(
         self, serial: str, *, daylight_saving, time_zone, time_zone_no, time_format
     ) -> None:
         """Time zone / DST / date format (all via one endpoint)."""
-        self._session.post(
-            f"{self._base}/api/device/configTimeZone",
-            data={
+
+        def form() -> dict:
+            return {
                 "deviceSerialNo": serial,
                 "daylightSaving": str(daylight_saving),
                 "timeZone": time_zone or "UTC+00:00",
@@ -317,9 +343,9 @@ class HikConnectClient:
                 "areaId": "105",
                 "clientType": "55",
                 "sessionId": self._session_id or "",
-            },
-            timeout=25,
-        )
+            }
+
+        self._call("POST", "/api/device/configTimeZone", form)
 
     # -- device status / metrics ------------------------------------------
     def get_device_status_map(self) -> dict[str, dict]:
@@ -396,11 +422,53 @@ class HikConnectClient:
         return out
 
     # -- http helpers -----------------------------------------------------
+    @staticmethod
+    def _unauthorized(status: int, payload: dict) -> bool:
+        """The cloud reports an expired session as a well-formed 401, not an error."""
+        return (
+            status == 401
+            or (payload.get("meta") or {}).get("code") == 401
+            or str(payload.get("resultCode")) == "-3"  # ISAPI passthrough
+        )
+
+    def _raw(self, method: str, path: str, data: dict | None = None) -> dict:
+        r = self._session.request(method, f"{self._base}{path}", data=data, timeout=25)
+        try:
+            return r.json()
+        except ValueError as err:
+            raise HikConnectError(f"{method} {path}: non-JSON reply ({r.status_code})") from err
+
+    def _call(self, method: str, path: str, data_factory=None) -> dict:
+        """Request, transparently re-authenticating once if the session has expired.
+
+        Sessions expire ~24h after login, so any long-lived request path has to be
+        able to renew itself; without this every caller silently degrades to no data.
+        `data_factory` is re-invoked on retry so bodies carrying the sessionId
+        (the ISAPI passthrough) are rebuilt with the fresh one.
+        """
+        for attempt in (1, 2):
+            data = data_factory() if data_factory else None
+            r = self._session.request(method, f"{self._base}{path}", data=data, timeout=25)
+            try:
+                payload = r.json()
+            except ValueError as err:
+                raise HikConnectError(
+                    f"{method} {path}: non-JSON reply ({r.status_code})"
+                ) from err
+            if not self._unauthorized(r.status_code, payload):
+                return payload
+            if attempt == 2:
+                raise HikConnectAuthError(
+                    f"{method} {path}: still unauthorized after re-login"
+                )
+            self._relogin(self._session_id)
+        raise AssertionError("unreachable")
+
     def _post(self, path: str, data: dict) -> dict:
-        return self._session.post(f"{self._base}{path}", data=data, timeout=25).json()
+        return self._call("POST", path, lambda: data)
 
     def _get(self, path: str) -> dict:
-        return self._session.get(f"{self._base}{path}", timeout=25).json()
+        return self._call("GET", path)
 
     def _put(self, path: str) -> dict:
-        return self._session.put(f"{self._base}{path}", timeout=25).json()
+        return self._call("PUT", path)

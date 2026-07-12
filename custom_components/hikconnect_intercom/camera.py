@@ -126,7 +126,7 @@ class HikLocalCamera(Camera):
                     self._cam.serial, self._cam.channel,
                 )
             except Exception as err:  # noqa: BLE001 - offline sub-stations error here
-                _LOGGER.debug(
+                _LOGGER.warning(
                     "no live feed for %s ch%d (%s): %s",
                     self._cam.serial, self._cam.channel, self._cam.name, err,
                 )
@@ -212,6 +212,11 @@ class HikLocalCamera(Camera):
     # -- live MJPEG -------------------------------------------------------
     async def handle_async_mjpeg_stream(self, request: web.Request) -> web.StreamResponse:
         if not await self._acquire(_ACQUIRE_TIMEOUT):
+            _LOGGER.warning(
+                "%s ch%d (%s): no free stream slot after %.0fs — %d in use on this device",
+                self._cam.serial, self._cam.channel, self._cam.name,
+                _ACQUIRE_TIMEOUT, _MAX_STREAMS_PER_DEVICE,
+            )
             return web.Response(status=503, text="camera busy")
         try:
             client = await self._open_client()
