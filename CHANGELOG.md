@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0](https://github.com/rtammekivi/hikconnect_intercom/compare/v0.9.5...v0.10.0) (2026-07-17)
+
+
+### Features
+
+* **camera:** share one CPD7 upstream per channel across all viewers ([0b56865](https://github.com/rtammekivi/hikconnect_intercom/commit/0b568652e3529d85f358962d99f3f2d7d905b626))
+
+
+### Bug Fixes
+
+* **api:** surface station rejection on call operations ([91d578d](https://github.com/rtammekivi/hikconnect_intercom/commit/91d578d93e7cfdbfa850b9b31a11442c22fcd7a7))
+
 ## [0.9.5](https://github.com/rtammekivi/hikconnect_intercom/compare/v0.9.4...v0.9.5) (2026-07-12)
 
 
